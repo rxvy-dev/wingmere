@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Wingmere
+GenericName=Flight Simulator
+Comment=Fly anywhere on the real Earth - open-source flight simulator
+Exec=wingmere
+Icon=wingmere
+Terminal=false
+Categories=Game;Simulation;
+Keywords=flight;simulator;plane;airport;earth;

@@ -1,0 +1,17 @@
+# Shown on the in-game CREDITS screen. Lines starting with = are headings.
+=WINGMERE
+Made by rxvy. Free and open source under the MIT licence.
+=AIRCRAFT MODELS  (CC BY 4.0 - FILL IN THE AUTHORS BEFORE RELEASE)
+Yellow Biplane - by AUTHOR NAME (LINK) - CC BY 4.0
+F4U Corsair - by AUTHOR NAME (LINK) - CC BY 4.0
+737 MAX 8 in Lion Air colours - by AUTHOR NAME (LINK) - CC BY 4.0
+Airdrop Transport (Free Fire plane) - by AUTHOR NAME (LINK) - CC BY 4.0
+Models were converted, re-oriented and scaled for the game; textures were resized.
+=WORLD DATA
+Imagery: Sentinel-2 cloudless 2016 - https://s2maps.eu by EOX IT Services GmbH
+(Contains modified Copernicus Sentinel data 2016 & 2017), CC BY 4.0
+Elevation: Terrain Tiles on AWS (Mapzen) - SRTM, GMTED2010, ETOPO1, NED, Canada CDEM,
+EU-DEM, Australia DEM, Mexico INEGI, Kartverket, LINZ and others
+Airports and runways: OurAirports (public domain)
+=CODE
+SDL2, OpenGL, libcurl, stb_image and stb_image_write by Sean Barrett, ufbx by Samuli Raivio
