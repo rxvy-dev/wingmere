@@ -10,6 +10,7 @@ Written in C with SDL2 and OpenGL 3.3, for every Linux distro. MIT licence.
 |---|---|
 | ![F-14 afterburners](docs/afterburner.jpg) | ![F-35 on the runway](docs/f35.jpg) |
 | ![3D buildings](docs/city.jpg) | ![City at night](docs/city-night.jpg) |
+| ![Airport with parked airliners](docs/airport.jpg) | ![Cumulus](docs/clouds.jpg) |
 | ![737 on final](docs/approach.jpg) | ![Night approach](docs/night.jpg) |
 
 *These were rendered on a build machine with no access to the real tile servers, so the ground, imagery and buildings come from the built-in offline world and a local test server (`tools/fake_tile_server.py`). Online, you get real satellite imagery, terrain and OpenStreetMap data.*
@@ -19,6 +20,9 @@ Written in C with SDL2 and OpenGL 3.3, for every Linux distro. MIT licence.
 - **The real planet, streamed.** A quadtree over the whole Earth in WGS84 double precision, with camera-relative rendering so there's no jitter anywhere, logarithmic depth for a 30 cm to 400 km view, and horizon culling. Imagery and elevation download on background threads, get cached in `~/.cache/wingmere`, and fall back to a procedural world when you're offline.
 - **Every real airport.** 9,313 airports and 12,530 runways from OurAirports. Runways get centrelines, piano keys, aiming points, touchdown-zone bars and their real designators (28R, 09L…), the terrain under them is levelled, and at night the edge, threshold and approach lights come on, including a sequenced-strobe "rabbit". A PAPI shows white/red against your real glide angle.
 - **Real map data for the whole world.** OpenStreetMap vector tiles (OpenFreeMap, no key needed) give exact coastlines, lakes and rivers (also used by the physics, so low land is not "sea"), extruded 3D buildings with facades, glass towers and lit windows at night, painted aprons and taxiways with yellow centrelines and green centreline lights, and street lights along every road at night.
+- **Airports that look lived in:** buildings on the edge of an apron become glass-fronted terminals and hangars, and airliners in assorted liveries park at the stands.
+- **Weather that looks like weather:** raymarched cumulus with flat dark bases, bright billowing tops, silver linings and multiple scattering, and their shadows drift across the ground, the buildings and your aircraft.
+- **Sharper mountains:** terrain is lit per pixel from the elevation data, now fetched one zoom level deeper, so ridges and gullies stay crisp.
 - **Choose your imagery:** Esri World Imagery (sharp, ~1 m), Sentinel-2 cloudless (10 m, open data) or USGS (USA only).
 - **Seven aircraft**, each with its own flight model and landing gear: Yellow Biplane, F4U Corsair, F-117 Nighthawk, F-35C Lightning II, F-14 Tomcat, Airdrop Transport (four turboprops) and a 737 MAX 8. The F-35 and F-14 light their **afterburners** (the last tenth of the throttle) with shock-diamond flames.
 - **Landing made easy:** flight assists (on by default) turn the stick into a fly-by-wire control that holds attitude, trims itself and coordinates turns, with stall protection. On approach you get autothrottle, a 3D glide-path "highway in the sky", ILS needles, radio-altitude callouts, a FLARE cue, autobrakes, and forgiving landing gear.
@@ -96,7 +100,7 @@ wingmere --help                 # everything else
 ```
 detail = 1.0                 # terrain detail, 0.5 - 2.5
 imagery_max_zoom = 14        # Sentinel-2 is 10 m per pixel, which is zoom 14
-elevation_max_zoom = 12      # 13 gives sharper mountains, using more memory and downloads
+elevation_max_zoom = 13      # 12 downloads less; 14 is sharper still
 texture_budget = 1536        # satellite tiles kept on the GPU
 threads = 6                  # download threads
 imagery = 0                  # 0 Esri World Imagery, 1 Sentinel-2 cloudless, 2 USGS (or set it in SETTINGS)

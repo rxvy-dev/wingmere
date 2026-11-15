@@ -158,14 +158,27 @@ static void make_detail(void) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     free(px);
 }
-/* tileable 3D noise for the clouds: value-noise fBm blended with inverted Worley for billowy edges */
+/* tileable 3D noise for the clouds: R = Perlin-Worley (value fBm blended with inverted Worley),
+ * G, B, A = inverted Worley at 4, 8 and 16 cells for the billowy detail */
+static float worley(const float *pts, int C, float x, float y, float z) {
+    float cx = x * C, cy = y * C, cz = z * C, best = 9;
+    int gx = (int)cx, gy = (int)cy, gz = (int)cz;
+    for (int dz = -1; dz <= 1; dz++) for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+        int qx = gx + dx, qy = gy + dy, qz = gz + dz;
+        const float *p = &pts[((((qz + C) % C) * C + (qy + C) % C) * C + (qx + C) % C) * 3];
+        float ex = qx + p[0] - cx, ey = qy + p[1] - cy, ez = qz + p[2] - cz, d = ex * ex + ey * ey + ez * ez;
+        if (d < best) best = d;
+    }
+    return 1 - clampf(sqrtf(best), 0, 1);
+}
 static void make_noise3(void) {
-    enum { N = 96, C = 6 };
+    enum { N = 96 };
     static float lat[4][32][32][32];
     for (int o = 0; o < 4; o++) { int n = 4 << o; for (int z = 0; z < n; z++) for (int y = 0; y < n; y++) for (int x = 0; x < n; x++) lat[o][z][y][x] = frand(); }
-    static float pts[C][C][C][3];
-    for (int z = 0; z < C; z++) for (int y = 0; y < C; y++) for (int x = 0; x < C; x++) for (int k = 0; k < 3; k++) pts[z][y][x][k] = frand();
-    uint8_t *px = malloc(N * N * N);
+    static const int CS[4] = {5, 4, 8, 16};
+    float *pts[4];
+    for (int k = 0; k < 4; k++) { int C = CS[k]; pts[k] = malloc(sizeof(float) * 3 * C * C * C); for (int i = 0; i < 3 * C * C * C; i++) pts[k][i] = frand(); }
+    uint8_t *px = malloc(N * N * N * 4);
     for (int z = 0; z < N; z++)
         for (int y = 0; y < N; y++)
             for (int x = 0; x < N; x++) {
@@ -181,26 +194,18 @@ static void make_noise3(void) {
                     float c10 = lerpf(lat[o][z1][iy][ix], lat[o][z1][iy][x1], tx), c11 = lerpf(lat[o][z1][y1][ix], lat[o][z1][y1][x1], tx);
                     a += b * lerpf(lerpf(c00, c01, ty), lerpf(c10, c11, ty), tz); b *= 0.5f;
                 }
-                float cx = (float)x / N * C, cy = (float)y / N * C, cz = (float)z / N * C, best = 9;
-                int gx = (int)cx, gy = (int)cy, gz = (int)cz;
-                for (int dz = -1; dz <= 1; dz++) for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
-                    int qx = gx + dx, qy = gy + dy, qz = gz + dz;
-                    float *p = pts[(qz + C) % C][(qy + C) % C][(qx + C) % C];
-                    float ex = qx + p[0] - cx, ey = qy + p[1] - cy, ez = qz + p[2] - cz, d = ex * ex + ey * ey + ez * ez;
-                    if (d < best) best = d;
-                }
-                float w = 1 - clampf(sqrtf(best), 0, 1);
-                px[(z * N + y) * N + x] = (uint8_t)clampf(((a - 0.25f) * 1.6f * 0.6f + w * 0.4f) * 255, 0, 255);
+                float u = (float)x / N, v = (float)y / N, w = (float)z / N;
+                float pw = clampf((a - 0.2f) * 1.7f, 0, 1) * 0.55f + worley(pts[0], CS[0], u, v, w) * 0.45f;
+                uint8_t *o = &px[((z * N + y) * N + x) * 4];
+                o[0] = (uint8_t)(clampf(pw, 0, 1) * 255);
+                for (int k = 1; k < 4; k++) o[k] = (uint8_t)(worley(pts[k], CS[k], u, v, w) * 255);
             }
     glGenTextures(1, &texNoise3); glBindTexture(GL_TEXTURE_3D, texNoise3);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_R8, N, N, N, 0, GL_RED, GL_UNSIGNED_BYTE, px);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, N, N, N, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
     glGenerateMipmap(GL_TEXTURE_3D);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR); glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    for (GLenum w = GL_TEXTURE_WRAP_S; w <= GL_TEXTURE_WRAP_R; w++) glTexParameteri(GL_TEXTURE_3D, w, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    free(px);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_REPEAT); glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_REPEAT); glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_REPEAT);
+    free(px); for (int k = 0; k < 4; k++) free(pts[k]);
 }
 
 /* ------------------------------------------------------------------ sun and sky */
@@ -426,6 +431,28 @@ static void draw_crew(const Flight *fl, m4 model, float t) {
             solid(boxVao, boxN, scaled(model, vadd(h, V(0.06f, -0.17f, -0.1f)), q_axis(V(0, 1, 0), sinf(t * 7) * 0.2f), V(0.08f, 0.04f, 0.3f)), 0.92f, 0.9f, 0.86f, 1, 0, 0.9f, false);
         }
     }
+}
+/* airliners waiting at the gates */
+static void draw_parked(const Camera *cam, float t) {
+    (void)t;
+    static int airliner = -2, prop = -2;
+    if (airliner == -2) { airliner = prop = -1; for (int i = 0; i < g_naircraft; i++) { if (!strcmp(g_aircraft[i].id, "b737")) airliner = i; if (!strcmp(g_aircraft[i].id, "transport")) prop = i; } }
+    if (airliner < 0) return;
+    ParkSpot sp[96];
+    int n = terrain_parked(cam->pos, 5500, sp, 96);
+    static const float LIV[6][4] = {{1, 1, 1, 0}, {0.92f, 0.93f, 0.95f, 0.7f}, {0.1f, 0.25f, 0.65f, 0.55f}, {0.7f, 0.06f, 0.05f, 0.5f}, {0.08f, 0.08f, 0.1f, 0.6f}, {0.95f, 0.55f, 0.1f, 0.5f}};
+    for (int i = 0; i < n; i++) {
+        const AircraftDef *a = &g_aircraft[(sp[i].seed % 9 == 0 && prop >= 0) ? prop : airliner];
+        v3 e, nn, u; enu_basis(sp[i].lat, sp[i].lon, &e, &nn, &u);
+        v3 f = vadd(vmul(nn, cosf(sp[i].heading * DEG)), vmul(e, sinf(sp[i].heading * DEG)));
+        float lift = -fminf(fminf(a->gear[0].y, a->gear[1].y), a->gear[2].y) - 0.05f;
+        v3 rel = d2f(dsub(dadd(sp[i].ground, f2d(vmul(u, lift))), cam->pos));
+        if (vlen(rel) > 5500) continue;
+        const float *lv = LIV[(sp[i].seed >> 3) % 6];
+        glUniform4f(U(pPlane, "uPaint"), lv[0], lv[1], lv[2], lv[3]);
+        aircraft_draw(pPlane, a, m4_trs(rel, q_look(f, u), 1), 0, 1, false);
+    }
+    glUniform4f(U(pPlane, "uPaint"), 0, 0, 0, 0);
 }
 static const Flight *flameFl; static m4 flameModel;
 static void draw_flames(float t) {
@@ -738,7 +765,7 @@ bool world_to_screen(d3 p, const Camera *cam, float *sx, float *sy) {
     *sx = (x / fabsf(w) * 0.5f + 0.5f) * g_w; *sy = (1 - (y / fabsf(w) * 0.5f + 0.5f)) * g_h;
     return w > 0.01f;
 }
-static v3 E_, U_, N_, camF_;
+static v3 E_, U_, N_, camF_, camWorldMod;
 static void set_common(GLuint p, v3 camPosF, float camAlt, v3 sunDir, v3 sunCol) {
     ui(p, "uSky", 0); ui(p, "uShadow", 1); ui(p, "uDetail", 3);
     u3(p, "uE", E_); u3(p, "uU", U_); u3(p, "uN", N_);
@@ -746,6 +773,9 @@ static void set_common(GLuint p, v3 camPosF, float camAlt, v3 sunDir, v3 sunCol)
     u1(p, "uCamAlt", camAlt); u1(p, "uFC", uFCv); u1(p, "uHaze", wHaze);
     um(p, "uShadowM", matShadow); u1(p, "uShTexel", 1.0f / cfg.shadowRes);
     u1(p, "uBoost", 1.0f / exposure); u1(p, "uNight", 1 - lightLevel);
+    ui(p, "uNoise3", 8);
+    u1(p, "uCover", cfg.clouds ? wCover : 0); u1(p, "uCloudBase", wBase); u1(p, "uCloudTop", wTop);
+    u3(p, "uCamWorldMod", camWorldMod);
     um(p, "uVP", matVP);
 }
 
@@ -782,6 +812,8 @@ void render_frame(const Camera *cam, const Flight *fl, float dt, bool drawAircra
     runway_lights(cam->pos, t);
     terrain_lights(cam->pos, 1 - lightLevel);
     v3 camPosF = d2f(cam->pos);
+    /* the cloud field is fixed to the Earth: the noise tiles every 6552 km, so a modulo keeps floats small */
+    camWorldMod = d2f(D(fmod(cam->pos.x, 6552000.0), fmod(cam->pos.y, 6552000.0), fmod(cam->pos.z, 6552000.0)));
 
     /* 1. aircraft shadow */
     m4 model = m4_ident();
@@ -811,7 +843,7 @@ void render_frame(const Camera *cam, const Flight *fl, float dt, bool drawAircra
     glBindFramebuffer(GL_FRAMEBUFFER, cfg.msaa > 1 ? fboMS : fboScene);
     glViewport(0, 0, rw, rh);
     glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    bind(0, GL_TEXTURE_CUBE_MAP, texSky); bind(1, GL_TEXTURE_2D, texSh); bind(3, GL_TEXTURE_2D, texDetail);
+    bind(0, GL_TEXTURE_CUBE_MAP, texSky); bind(1, GL_TEXTURE_2D, texSh); bind(3, GL_TEXTURE_2D, texDetail); bind(8, GL_TEXTURE_3D, texNoise3);
     /* sky behind everything */
     glDisable(GL_DEPTH_TEST); glDepthMask(GL_FALSE);
     glUseProgram(pSky); set_common(pSky, camPosF, alt, sunDir, sunCol);
@@ -863,6 +895,13 @@ void render_frame(const Camera *cam, const Flight *fl, float dt, bool drawAircra
         draw_flames(t);
         glEnable(GL_BLEND);
     }
+    if (S.buildings) {
+        glUseProgram(pPlane); set_common(pPlane, camPosF, alt, sunDir, sunCol);
+        ui(pPlane, "uTexColor", 4); ui(pPlane, "uTexNormal", 5); ui(pPlane, "uTexRough", 6);
+        glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        glUniform3f(U(pPlane, "uFinish"), 0, 0, 0);
+        draw_parked(cam, t);
+    }
     /* smoke, contrails and lights */
     partN = 0;
     for (int i = 0; i < nPart; i++) {
@@ -902,13 +941,11 @@ void render_frame(const Camera *cam, const Flight *fl, float dt, bool drawAircra
     if (clouds) {
         glBindFramebuffer(GL_FRAMEBUFFER, fboCloud); glViewport(0, 0, cw, ch);
         glUseProgram(pClouds); set_common(pClouds, camPosF, alt, sunDir, sunCol);
-        bind(2, GL_TEXTURE_2D, texDepth); bind(5, GL_TEXTURE_3D, texNoise3);
-        ui(pClouds, "uDepth", 2); ui(pClouds, "uNoise3", 5);
+        bind(2, GL_TEXTURE_2D, texDepth); bind(8, GL_TEXTURE_3D, texNoise3);
+        ui(pClouds, "uDepth", 2);
         u3(pClouds, "uCamR", R); u3(pClouds, "uCamUp", Up); u3(pClouds, "uCamF", F);
-        d3 wm = D(fmod(cam->pos.x, 6552000.0), fmod(cam->pos.y, 6552000.0), fmod(cam->pos.z, 6552000.0));
-        u3(pClouds, "uCamWorldMod", d2f(wm));
+
         u1(pClouds, "uTan", tanf(fov * 0.5f)); u1(pClouds, "uAspect", aspect); u1(pClouds, "uTime", t);
-        u1(pClouds, "uCover", wCover); u1(pClouds, "uCloudBase", wBase); u1(pClouds, "uCloudTop", wTop);
         fs_pass();
     }
 

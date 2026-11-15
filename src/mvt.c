@@ -201,6 +201,62 @@ static void building(BBuf *b, const Geom *g, float tileM, float h, float hmin) {
     b->nb++;
 }
 
+/* ------------------------------------------------------------------ parking spots on aprons */
+typedef struct { P2 *p; int n; int *ring; int nring; } Poly;
+static bool inside_poly(const Poly *a, float x, float y) {
+    bool in = false;
+    for (int r = 0; r < a->nring; r++) {
+        int s = a->ring[r], e = r + 1 < a->nring ? a->ring[r + 1] : a->n;
+        for (int i = s; i + 1 < e; i++) {
+            P2 u = a->p[i], w = a->p[i + 1];
+            if ((u.y > y) != (w.y > y) && x < u.x + (y - u.y) / (w.y - u.y) * (w.x - u.x)) in = !in;
+        }
+    }
+    return in;
+}
+static float edge_dist(const Poly *a, float x, float y, float *ex, float *ey) {
+    float best = 1e9f;
+    for (int r = 0; r < a->nring; r++) {
+        int s = a->ring[r], e = r + 1 < a->nring ? a->ring[r + 1] : a->n;
+        for (int i = s; i + 1 < e; i++) {
+            P2 u = a->p[i], w = a->p[i + 1];
+            float dx = w.x - u.x, dy = w.y - u.y, L2 = dx * dx + dy * dy;
+            float t = L2 > 1e-6f ? clampf(((x - u.x) * dx + (y - u.y) * dy) / L2, 0, 1) : 0;
+            float qx = u.x + t * dx, qy = u.y + t * dy, d = sqrtf((x - qx) * (x - qx) + (y - qy) * (y - qy));
+            if (d < best) { best = d; *ex = qx; *ey = qy; }
+        }
+    }
+    return best;
+}
+/* stands: points well inside an apron, a nose-length from its edge, off the taxiways, near buildings */
+static int find_stands(const Poly *ap, int nap, const Raster *R, float mPerPx, float tileM, const float *bc, int nb, float *out, int max) {
+    int n = R->n, cnt = 0;
+    float step = 30 / mPerPx;
+    for (int a = 0; a < nap && cnt < max; a++) {
+        float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
+        for (int i = 0; i < ap[a].n; i++) { x0 = fminf(x0, ap[a].p[i].x); x1 = fmaxf(x1, ap[a].p[i].x); y0 = fminf(y0, ap[a].p[i].y); y1 = fmaxf(y1, ap[a].p[i].y); }
+        x0 = fmaxf(x0, 0); y0 = fmaxf(y0, 0); x1 = fminf(x1, n - 1); y1 = fminf(y1, n - 1);
+        for (float y = y0 + step * 0.5f; y < y1 && cnt < max; y += step)
+            for (float x = x0 + step * 0.5f; x < x1 && cnt < max; x += step) {
+                if (!inside_poly(&ap[a], x, y)) continue;
+                float ex = x, ey = y, dm = edge_dist(&ap[a], x, y, &ex, &ey) * mPerPx;
+                if (dm < 24 || dm > 46) continue;
+                if (R->ch[2][(int)y * n + (int)x] < 245) continue;                  /* a taxiway runs through here */
+                float lx = (x / n - 0.5f) * tileM, ly = (0.5f - y / n) * tileM;
+                bool nearB = false;
+                for (int b = 0; b < nb && !nearB; b++) { float dx = bc[b * 4] - lx, dy = bc[b * 4 + 1] - ly; if (dx * dx + dy * dy < 220 * 220) nearB = true; }
+                if (!nearB) continue;
+                bool crowded = false;
+                for (int k = 0; k < cnt && !crowded; k++) { float dx = out[k * 3] - lx, dy = out[k * 3 + 1] - ly; if (dx * dx + dy * dy < 52 * 52) crowded = true; }
+                if (crowded) continue;
+                float hx = (ex / n - 0.5f) * tileM - lx, hy = (0.5f - ey / n) * tileM - ly;   /* nose towards the apron edge */
+                out[cnt * 3] = lx; out[cnt * 3 + 1] = ly; out[cnt * 3 + 2] = atan2f(hx, hy);
+                cnt++;
+            }
+    }
+    return cnt;
+}
+
 /* ------------------------------------------------------------------ the tile */
 VecTile *mvt_decode(const uint8_t *data, size_t len, int z, int x, int y) {
     VecTile *vt = calloc(1, sizeof *vt);
@@ -214,6 +270,7 @@ VecTile *mvt_decode(const uint8_t *data, size_t len, int z, int x, int y) {
     BBuf B = {0};
     Geom g = {0};
     float *lights = NULL; int nl = 0, capL = 0;
+    Poly aprons[48]; int napr = 0;
     PB tile = {data, data + len};
     while (tile.p < tile.e) {
         int wt, f = key(&tile, &wt);
@@ -287,7 +344,15 @@ VecTile *mvt_decode(const uint8_t *data, size_t len, int z, int x, int y) {
                     if (w > 0) stroke(&R, 0, &g, w * 0.5f / mPerPx, 1, -1, mPerPx);
                 }
             } else if (kind == 2) {
-                if (type == 3 && (val_is(cls, "apron") || val_is(cls, "taxiway") || val_is(cls, "runway") || val_is(cls, "helipad"))) fill_poly(&R, 1, &g, 1);
+                if (type == 3 && (val_is(cls, "apron") || val_is(cls, "taxiway") || val_is(cls, "runway") || val_is(cls, "helipad"))) {
+                    fill_poly(&R, 1, &g, 1);
+                    if (z >= 14 && val_is(cls, "apron") && napr < 48 && g.n > 3) {
+                        Poly *ap = &aprons[napr++];
+                        ap->n = g.n; ap->nring = g.nring;
+                        ap->p = malloc(sizeof(P2) * g.n); memcpy(ap->p, g.p, sizeof(P2) * g.n);
+                        ap->ring = malloc(sizeof(int) * g.nring); memcpy(ap->ring, g.ring, sizeof(int) * g.nring);
+                    }
+                }
                 else if (type == 2 && val_is(cls, "taxiway")) {
                     stroke(&R, 1, &g, 11.5f / mPerPx, 1, 2, mPerPx);
                     /* the centreline as points every 10 m (tile-local metres); a 1e9 x marks the end of a line */
@@ -321,6 +386,18 @@ VecTile *mvt_decode(const uint8_t *data, size_t len, int z, int x, int y) {
         free(vals);
     }
     free(g.p); free(g.ring);
+    if (napr) {
+        vt->park = malloc(sizeof(float) * 3 * 64);
+        vt->npark = find_stands(aprons, napr, &R, mPerPx, tileM, B.c, B.nb, vt->park, 64);
+        /* buildings on the edge of an apron are terminals and hangars: give them glass fronts */
+        for (int bi = 0; bi < B.nb; bi++) {
+            float *c = B.c + bi * 4, px = (c[0] / tileM + 0.5f) * n, py = (0.5f - c[1] / tileM) * n, ex, ey;
+            bool term = false;
+            for (int a2 = 0; a2 < napr && !term; a2++) if (edge_dist(&aprons[a2], px, py, &ex, &ey) * mPerPx < 140) term = true;
+            if (term) for (int k = (int)c[2]; k < (int)(c[2] + c[3]); k++) B.v[k * 10 + 9] = 0.97f;
+        }
+        for (int a = 0; a < napr; a++) { free(aprons[a].p); free(aprons[a].ring); }
+    }
     /* interleave into RGBA, and keep a 128x128 water bitmap for the physics */
     vt->mask = malloc((size_t)n * n * 4);
     for (int i = 0; i < n * n; i++) { vt->mask[i * 4] = R.ch[0][i]; vt->mask[i * 4 + 1] = R.ch[1][i]; vt->mask[i * 4 + 2] = R.ch[2][i]; vt->mask[i * 4 + 3] = R.ch[3][i]; }
@@ -340,5 +417,5 @@ VecTile *mvt_decode(const uint8_t *data, size_t len, int z, int x, int y) {
 }
 void vectile_free(VecTile *v) {
     if (!v) return;
-    free(v->mask); free(v->water); free(v->bv); free(v->bc); free(v->lights); free(v);
+    free(v->mask); free(v->water); free(v->bv); free(v->bc); free(v->lights); free(v->park); free(v);
 }

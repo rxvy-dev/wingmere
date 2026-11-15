@@ -91,9 +91,12 @@ def city_features():
     roads = [LineString([(-122.43 + i * 0.0035, 37.628), (-122.43 + i * 0.0035, 37.65)]) for i in range(9)]
     roads += [LineString([(-122.432, 37.628 + j * 0.003), (-122.40, 37.628 + j * 0.003)]) for j in range(8)]
     apron = Polygon([(-122.3935, 37.6160), (-122.3870, 37.6178), (-122.3860, 37.6162), (-122.3925, 37.6145)])
+    # a second terminal with its apron just north of the 10L threshold
+    b.append((Polygon([(-122.3990, 37.6345), (-122.3920, 37.6345), (-122.3920, 37.6352), (-122.3990, 37.6352)]), 16))
+    apron2 = Polygon([(-122.3995, 37.6324), (-122.3915, 37.6324), (-122.3915, 37.6345), (-122.3995, 37.6345)])
     taxi = [LineString([(-122.3575, 37.6155), (-122.3935, 37.6315)]), LineString([(-122.380, 37.6195), (-122.3885, 37.6168)])]
     water = Polygon([(-122.31, 37.4), (-121.9, 37.4), (-121.9, 37.9), (-122.31, 37.9)])
-    return b, roads, apron, taxi, water
+    return b, roads, [apron, apron2], taxi, water
 
 
 CITY = None
@@ -121,7 +124,7 @@ def vector_tile(z, x, y):
     layers = [{'name': 'water', 'features': feats([water], [{'class': 'ocean'}])}]
     if z >= 10:
         layers.append({'name': 'transportation', 'features': feats(roads, [{'class': 'primary' if i % 3 == 0 else 'minor'} for i in range(len(roads))])})
-        layers.append({'name': 'aeroway', 'features': feats([apron] + taxi, [{'class': 'apron'}] + [{'class': 'taxiway'}] * len(taxi))})
+        layers.append({'name': 'aeroway', 'features': feats(apron + taxi, [{'class': 'apron'}] * len(apron) + [{'class': 'taxiway'}] * len(taxi))})
     if z >= 13:
         layers.append({'name': 'building', 'features': feats([g for g, _ in blds], [{'render_height': h, 'render_min_height': 0} for _, h in blds])})
     return mapbox_vector_tile.encode(layers, default_options={'y_coord_down': True, 'quantize_bounds': None})

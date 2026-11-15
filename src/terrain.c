@@ -46,7 +46,7 @@ static void map_del(Map *m, uint64_t k) {
 static uint64_t tkey(int z, int x, int y) { return ((uint64_t)z << 52) | ((uint64_t)x << 26) | (uint64_t)y; }
 
 /* ------------------------------------------------------------------ caches */
-typedef struct { uint64_t key; int z, x, y, status, last; float *h; float hmin, hmax; } ElevTile;
+typedef struct { uint64_t key; int z, x, y, status, last; float *h; float hmin, hmax; GLuint tex; } ElevTile;
 typedef struct { uint64_t key; int z, x, y, status, last; GLuint tex; } ImgTile;
 typedef struct { uint64_t key; int z, x, y, last, srcZ, maskZ, used; GLuint vao, vbo; d3 center; float hmin, hmax; } MeshTile;
 static ElevTile elev[CAP_ELEV]; static Map elevMap; static int nElev;
@@ -70,7 +70,7 @@ static int evict_slot(void *arr, size_t stride, int count, int (*lastOf)(void *)
     return best;
 }
 static int elev_last(void *p) { return ((ElevTile *)p)->last; }
-static void elev_free(void *p) { ElevTile *e = p; map_del(&elevMap, e->key); free(e->h); memset(e, 0, sizeof *e); e->last = -1000000; }
+static void elev_free(void *p) { ElevTile *e = p; map_del(&elevMap, e->key); free(e->h); if (e->tex) glDeleteTextures(1, &e->tex); memset(e, 0, sizeof *e); e->last = -1000000; }
 static ElevTile *elev_new(int z, int x, int y) {
     int s = nElev < CAP_ELEV ? nElev++ : evict_slot(elev, sizeof(ElevTile), CAP_ELEV, elev_last, elev_free);
     if (s < 0) return NULL;
@@ -130,6 +130,7 @@ typedef struct {
     uint64_t key; int z, x, y, status, last, born; GLuint tex; uint8_t *water;
     VecTile *raw;                         /* buildings and taxiway lines, waiting for good elevation data */
     GLuint bvao, bvbo, tvao, tvbo; int bn, tn; d3 center; d3 *lights; int nlights; bool built;
+    ParkSpot *park; int npark;
 } VecC;
 static VecC vec[CAP_VEC]; static Map vecMap; static int nVec;
 static VecC *vec_get(int z, int x, int y) { int s = map_get(&vecMap, tkey(z, x, y)); return s < 0 ? NULL : &vec[s]; }
@@ -139,7 +140,7 @@ static void vec_free(void *p) {
     if (v->tex) glDeleteTextures(1, &v->tex);
     if (v->bvao) { glDeleteVertexArrays(1, &v->bvao); glDeleteBuffers(1, &v->bvbo); }
     if (v->tvao) { glDeleteVertexArrays(1, &v->tvao); glDeleteBuffers(1, &v->tvbo); }
-    free(v->water); vectile_free(v->raw); free(v->lights);
+    free(v->water); vectile_free(v->raw); free(v->lights); free(v->park);
     memset(v, 0, sizeof *v); v->last = -1000000;
 }
 static VecC *vec_new(int z, int x, int y) {
@@ -193,6 +194,7 @@ static void vec_build(VecC *v) {
     if (v->bvao) { glDeleteVertexArrays(1, &v->bvao); glDeleteBuffers(1, &v->bvbo); v->bvao = 0; v->bn = 0; }
     if (v->tvao) { glDeleteVertexArrays(1, &v->tvao); glDeleteBuffers(1, &v->tvbo); v->tvao = 0; v->tn = 0; }
     free(v->lights); v->lights = NULL; v->nlights = 0;
+    free(v->park); v->park = NULL; v->npark = 0;
     double latc = merc_lat(v->y + 0.5, v->z), lonc = merc_lon(v->x + 0.5, v->z);
     float tileM = (float)(2 * M_PI * EARTH_R * cos(latc * M_PI / 180) / (1 << v->z));
     v3 E, N, U; enu_basis(latc, lonc, &E, &N, &U);
@@ -246,6 +248,16 @@ static void vec_build(VecC *v) {
         }
         if (n) { v->tvao = geo_vao(out, n, &v->tvbo); v->tn = n; }
         free(out);
+    }
+    if (r->npark) {
+        v->park = malloc(sizeof(ParkSpot) * r->npark);
+        for (int i = 0; i < r->npark; i++) {
+            ParkSpot *p = &v->park[v->npark++];
+            local_to_geo(v, tileM, r->park[i * 3], r->park[i * 3 + 1], &p->lat, &p->lon);
+            p->ground = geo_to_ecef(p->lat, p->lon, terrain_height(p->lat, p->lon, NULL, NULL));
+            p->heading = r->park[i * 3 + 2] / DEG;
+            p->seed = (uint32_t)(v->x * 73856093u ^ v->y * 19349663u ^ (uint32_t)i * 83492791u);
+        }
     }
     vectile_free(v->raw); v->raw = NULL;
 }
@@ -390,6 +402,12 @@ static void receive(void) {
                         free(e->h); e->h = d->height; d->height = NULL;
                         e->hmin = 1e9f; e->hmax = -1e9f;
                         for (int k = 0; k < 256 * 256; k += 7) { e->hmin = fminf(e->hmin, e->h[k]); e->hmax = fmaxf(e->hmax, e->h[k]); }
+                        /* the heights also go to the GPU, so the shader can light every pixel with the real slope */
+                        if (!e->tex) glGenTextures(1, &e->tex);
+                        glBindTexture(GL_TEXTURE_2D, e->tex);
+                        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, 256, 256, 0, GL_RED, GL_FLOAT, e->h);
+                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                     } else if (d->status == TILE_OK) e->status = TILE_FAILED;
                     if (e->status == TILE_FAILED) e->last = frameNo + 300; /* retry in a few seconds */
                 }
@@ -410,7 +428,7 @@ static void receive(void) {
                         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                         free(v->water); v->water = t->water; t->water = NULL;
                         free(t->mask); t->mask = NULL;
-                        if (t->nb || t->nl) { vectile_free(v->raw); v->raw = t; v->built = false; v->born = frameNo; }
+                        if (t->nb || t->nl || t->npark) { vectile_free(v->raw); v->raw = t; v->built = false; v->born = frameNo; }
                         else vectile_free(t);
                         d->vec = NULL;
                         uploads++;
@@ -562,6 +580,8 @@ void terrain_update(d3 cam, const float fr[6][4], float tanHalfFov, int screenH)
 void terrain_draw(GLuint prog, d3 cam) {
     GLint uOff = glGetUniformLocation(prog, "uOffset"), uST = glGetUniformLocation(prog, "uImgST"), uHas = glGetUniformLocation(prog, "uHasImg");
     GLint uMST = glGetUniformLocation(prog, "uMaskST"), uHM = glGetUniformLocation(prog, "uHasMask");
+    GLint uEST = glGetUniformLocation(prog, "uElevST"), uHE = glGetUniformLocation(prog, "uHasElev"), uETM = glGetUniformLocation(prog, "uElevTexelM");
+    glUniform1i(glGetUniformLocation(prog, "uElev"), 9);
     glUniform1i(glGetUniformLocation(prog, "uMask"), 7);
     glActiveTexture(GL_TEXTURE2);   /* units 0, 1 and 3 hold the sky, shadow and detail textures */
     for (int i = 0; i < nDraw; i++) {
@@ -585,6 +605,15 @@ void terrain_draw(GLuint prog, d3 cam) {
             glUniform1f(uHM, 1);
             glActiveTexture(GL_TEXTURE7); glBindTexture(GL_TEXTURE_2D, vm->tex); glActiveTexture(GL_TEXTURE2);
         } else glUniform1f(uHM, 0);
+        int ez; ElevTile *et = elev_best(n->z, n->x, n->y, &ez);
+        if (et && et->tex) {
+            int d = n->z - ez; float s = 1.0f / (float)(1 << d);
+            glUniform4f(uEST, s, s, (float)(n->x - ((n->x >> d) << d)) * s, (float)(n->y - ((n->y >> d) << d)) * s);
+            double lat = merc_lat(et->y + 0.5, ez);
+            glUniform1f(uETM, (float)(2 * M_PI * EARTH_R * cos(lat * M_PI / 180) / (1 << ez) / 256.0));
+            glUniform1f(uHE, 1);
+            glActiveTexture(GL_TEXTURE9); glBindTexture(GL_TEXTURE_2D, et->tex); glActiveTexture(GL_TEXTURE2);
+        } else glUniform1f(uHE, 0);
         v3 off = d2f(dsub(m->center, cam));
         glUniform3f(uOff, off.x, off.y, off.z);
         glBindVertexArray(m->vao);
@@ -692,4 +721,13 @@ void terrain_lights(d3 cam, float night) {
         if (dlen(dsub(v->center, cam)) > 9000) continue;
         for (int k = 0; k < v->nlights; k++) fx_light(v->lights[k], 0.22f, 0.15f, 1.0f, 0.35f, 2.2f * smooth(0.25f, 0.6f, night));
     }
+}
+int terrain_parked(d3 cam, float maxDist, ParkSpot *out, int max) {
+    int n = 0;
+    for (int i = 0; i < CAP_VEC && n < max; i++) {
+        VecC *v = &vec[i];
+        if (!v->key || !v->built || !v->npark || dlen(dsub(v->center, cam)) > maxDist + 2000) continue;
+        for (int k = 0; k < v->npark && n < max; k++) if (dlen(dsub(v->park[k].ground, cam)) < maxDist) out[n++] = v->park[k];
+    }
+    return n;
 }

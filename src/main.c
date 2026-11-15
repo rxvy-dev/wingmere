@@ -157,7 +157,7 @@ static void settings_defaults(void) {
     snprintf(S.elevation_url, sizeof S.elevation_url, "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png");
     snprintf(S.user_agent, sizeof S.user_agent, "Wingmere/" WM_VERSION " (open-source flight simulator; https://github.com/rxvy-dev/wingmere)");
     home_path(S.cache_dir, sizeof S.cache_dir, "XDG_CACHE_HOME", ".cache", "");
-    S.imagery_max_zoom = 14; S.elevation_max_zoom = 12; S.threads = 8; S.texture_budget = 1536; S.detail = 1.0f; S.offline = false;
+    S.imagery_max_zoom = 14; S.elevation_max_zoom = 13; S.threads = 8; S.texture_budget = 1536; S.detail = 1.0f; S.offline = false;
     snprintf(S.vector_tilejson, sizeof S.vector_tilejson, "https://tiles.openfreemap.org/planet");
     S.buildings = true;
     home_path(cfgPath, sizeof cfgPath, "XDG_CONFIG_HOME", ".config", "/wingmere.cfg");
@@ -283,8 +283,8 @@ static void runway_end(int ri, int end, double *lat, double *lon, float *brg, fl
     *brg = fmodf(r->heading + (end ? 180 : 0), 360); *elev = end ? r->e2 : r->e1;
 }
 static void apply_weather(float fieldElev) {
-    static const float cover[5] = {0.0f, 0.30f, 0.45f, 0.62f, 0.86f}, haze[5] = {2.6e-5f, 3.4e-5f, 4.2e-5f, 5.5e-5f, 8e-5f};
-    float base = fieldElev + (weatherSel >= 3 ? 700 : 1300), top = base + (weatherSel == 4 ? 900 : 1900);
+    static const float cover[5] = {0.0f, 0.38f, 0.55f, 0.72f, 0.92f}, haze[5] = {2.6e-5f, 3.4e-5f, 4.2e-5f, 5.5e-5f, 8e-5f};
+    float base = fieldElev + (weatherSel >= 3 ? 800 : 1300), top = base + (weatherSel == 4 ? 1100 : weatherSel == 3 ? 2600 : 2100);
     render_weather(cover[weatherSel], base, top, haze[weatherSel]);
 }
 static v3 wind_at(const Flight *f, float t) {

@@ -98,7 +98,9 @@ extern Settings S;
 /* ------------------------------------------------------------------ tile downloads (tiles.c) */
 enum { LAYER_ELEV = 0, LAYER_IMG = 1, LAYER_VEC = 2 };
 /* a decoded OpenStreetMap vector tile (mvt.c) */
-typedef struct { int n; uint8_t *mask; uint8_t *water; int nw; float *bv; int nbv; float *bc; int nb; float *lights; int nl; } VecTile;
+typedef struct { int n; uint8_t *mask; uint8_t *water; int nw; float *bv; int nbv; float *bc; int nb; float *lights; int nl; float *park; int npark; } VecTile;
+typedef struct { d3 ground; double lat, lon; float heading; uint32_t seed; } ParkSpot;   /* an airliner parked at a gate */
+int terrain_parked(d3 cam, float maxDist, ParkSpot *out, int max);
 VecTile *mvt_decode(const uint8_t *data, size_t len, int z, int x, int y);
 void vectile_free(VecTile *v);
 enum { TILE_OK = 1, TILE_MISSING = 2, TILE_FAILED = 3 };

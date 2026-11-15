@@ -34,6 +34,25 @@ vec3 brdf(vec3 N, vec3 Vv, vec3 L, vec3 alb, float metal, float rough, vec3 f0) 
     vec3 F = F_Schlick(vh, f0);
     return ((1.0 - F) * (1.0 - metal) * alb / PI + F * D_GGX(nh, a) * V_Smith(nv, nl, a)) * nl;
 }
+uniform sampler3D uNoise3;          // r: Perlin-Worley, gba: Worley at three frequencies (tiling)
+uniform float uCover, uCloudBase, uCloudTop;
+uniform vec3 uCamWorldMod;
+// where the clouds are: a slowly varying weather map, 0..1
+float cloudCoverage(vec3 wp) {
+    float c = texture(uNoise3, wp / 34000.0).r * 0.62 + texture(uNoise3, wp / 12000.0 + 0.37).r * 0.38;
+    return smoothstep(1.0 - uCover - 0.12, 1.0 - uCover + 0.18, c);
+}
+// sunlight left after passing through the cloud layer above this point
+float cloudShadow(vec3 rel, float alt) {
+    float sy = dot(uSunDir, uU);
+    if (uCover < 0.02 || sy < 0.03) return 1.0;
+    float mid = mix(uCloudBase, uCloudTop, 0.3);
+    if (alt > mid) return 1.0;
+    vec3 wp = rel + uCamWorldMod + uSunDir * ((mid - alt) / sy);
+    float c = cloudCoverage(wp);
+    float n = texture(uNoise3, wp / 3200.0).r;
+    return 1.0 - 0.72 * smoothstep(0.15, 0.6, c * (0.55 + 0.6 * n));
+}
 uniform sampler2DShadow uShadow;
 uniform mat4 uShadowM;
 uniform float uShTexel;
@@ -56,29 +75,40 @@ layout(location = 2) in vec2 aUV;
 layout(location = 3) in float aH;
 uniform mat4 uVP;
 uniform vec3 uOffset;
-uniform vec4 uImgST, uMaskST;
+uniform vec4 uImgST, uMaskST, uElevST;
 out vec3 vRel, vN;
-out vec2 vUV, vMUV;
+out vec2 vUV, vMUV, vEUV;
 out float vH, vW;
 void main() {
     vRel = aPos + uOffset;
-    vN = aNrm; vUV = aUV * uImgST.xy + uImgST.zw; vMUV = aUV * uMaskST.xy + uMaskST.zw; vH = aH;
+    vN = aNrm; vUV = aUV * uImgST.xy + uImgST.zw; vMUV = aUV * uMaskST.xy + uMaskST.zw; vEUV = aUV * uElevST.xy + uElevST.zw; vH = aH;
     gl_Position = uVP * vec4(vRel, 1.0);
     vW = 1.0 + gl_Position.w;
 }
 
 //@ terrain.frag
 in vec3 vRel, vN;
-in vec2 vUV, vMUV;
+in vec2 vUV, vMUV, vEUV;
 in float vH, vW;
-uniform sampler2D uImg, uDetail, uMask;
-uniform float uHasImg, uHasMask, uPave;
+uniform sampler2D uImg, uDetail, uMask, uElev;
+uniform float uHasImg, uHasMask, uPave, uHasElev, uElevTexelM;
 uniform vec3 uCamMod;
 out vec4 fragColor;
 void main() {
     float dist = length(vRel);
     vec3 N = normalize(vN);
     vec3 upL = normalize(uCamPosF + vRel);
+    if (uHasElev > 0.5) {
+        // per-pixel slope from the elevation data: ridges and gullies sharper than the mesh can carry
+        float t = 1.0 / 256.0;
+        float hc = texture(uElev, vEUV).r;
+        float he = texture(uElev, vEUV + vec2(t, 0.0)).r - texture(uElev, vEUV - vec2(t, 0.0)).r;
+        float hn = texture(uElev, vEUV - vec2(0.0, t)).r - texture(uElev, vEUV + vec2(0.0, t)).r;
+        vec3 E = normalize(cross(vec3(0.0, 0.0, 1.0), upL)), Nn = cross(upL, E);
+        vec3 nd = normalize(upL - E * he / (2.0 * uElevTexelM) - Nn * hn / (2.0 * uElevTexelM));
+        float keep = smoothstep(1.5, 5.0, abs(max(hc, 0.0) - vH));      // levelled runways keep the mesh normal
+        if (hc > 0.5 && !any(isnan(nd))) N = normalize(mix(nd, N, keep));
+    }
     vec3 alb;
     if (uHasImg > 0.5) alb = texture(uImg, vUV).rgb;
     else {
@@ -116,7 +146,7 @@ void main() {
     vec3 L = uSunDir, Vv = -vRel / max(dist, 1e-3);
     float ndl = max(dot(N, L), 0.0), fdl = max(dot(upL, L), 0.0);
     float relief = clamp((ndl + 0.04) / (fdl + 0.04), 0.25, 1.9);   // imagery already holds the flat-ground shading
-    float sh = planeShadow(vRel, upL);
+    float sh = planeShadow(vRel, upL) * cloudShadow(vRel, vH);
     vec3 col = alb / PI * uSunCol * fdl * relief * sh + alb * textureLod(uSky, normalize(toEnu(upL)), 7.0).rgb;
     if (water > 0.0) {
         vec3 Rw = reflect(-Vv, upL);
@@ -223,7 +253,7 @@ void main() {
     }
     float shoulder = smoothstep(hw - 0.3, hw + 0.2, aw);
     float fdl = max(dot(upL, uSunDir), 0.0);
-    float sh = planeShadow(vRel, upL);
+    float sh = planeShadow(vRel, upL) * cloudShadow(vRel, uAlt);
     vec3 Vv = -vRel / max(dist, 1e-3), H = normalize(uSunDir + Vv);
     float spec = D_GGX(max(dot(upL, H), 0.0), 0.35) * 0.04 * (1.0 - paint);
     vec3 col = alb / PI * uSunCol * fdl * sh + alb * textureLod(uSky, normalize(toEnu(upL)), 7.0).rgb + uSunCol * spec * fdl * sh;
@@ -287,7 +317,7 @@ void main() {
     }
     vec3 upL = normalize(uCamPosF + vRel);
     vec3 f0 = mix(vec3(0.04), base.rgb, metal);
-    float sh = planeShadow(vRel, Ng);
+    float sh = planeShadow(vRel, Ng) * cloudShadow(vRel, uCamAlt + dot(vRel, uU));
     vec3 col = brdf(N, Vv, uSunDir, base.rgb, metal, rough, f0) * uSunCol * sh;
     vec3 R = reflect(-Vv, N);
     vec3 env = skyColor(R, rough * 6.0);
@@ -392,7 +422,7 @@ void main() {
     }
     float fdl = max(dot(upL, uSunDir), 0.0);
     float ndl = max(dot(N, uSunDir), 0.0);
-    vec3 col = alb / PI * uSunCol * ndl + alb * textureLod(uSky, normalize(toEnu(N)), 7.0).rgb * (0.65 + 0.35 * dot(N, upL));
+    vec3 col = alb / PI * uSunCol * ndl * cloudShadow(vRel, uCamAlt + dot(vRel, uU)) + alb * textureLod(uSky, normalize(toEnu(N)), 7.0).rgb * (0.65 + 0.35 * dot(N, upL));
     if (glass > 0.0) {
         vec3 R = reflect(-Vv, N);
         float fres = 0.04 + 0.96 * pow(1.0 - max(dot(Vv, N), 0.0), 5.0);
@@ -564,24 +594,33 @@ void main() {
 }
 
 //@ clouds.frag
-// raymarched cumulus layer, drawn at half resolution: rgb = light scattered toward us, a = transmittance
+// raymarched cumulus, at half resolution: rgb = light scattered toward us, a = transmittance.
+// Flat dark bases, cauliflower tops, Beer-powder lighting with multiple-scattering octaves.
 in vec2 vUV;
 uniform sampler2D uDepth;
-uniform sampler3D uNoise3;
-uniform vec3 uCamR, uCamUp, uCamF, uCamWorldMod;
-uniform float uTan, uAspect, uTime, uCover, uCloudBase, uCloudTop;
+uniform vec3 uCamR, uCamUp, uCamF;
+uniform float uTan, uAspect, uTime;
 out vec4 fragColor;
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
-float cloudDensity(vec3 wp, float alt) {
-    float hfrac = (alt - uCloudBase) / (uCloudTop - uCloudBase);
-    if (hfrac < 0.0 || hfrac > 1.0) return 0.0;
-    float profile = smoothstep(0.0, 0.15, hfrac) * smoothstep(1.0, 0.45, hfrac);
-    float cov = texture(uNoise3, wp / 24000.0).r * 0.65 + texture(uNoise3, wp / 9000.0 + 0.3).r * 0.35;
-    float shape = texture(uNoise3, wp / 2600.0).r;
-    float d = cov + uCover - 1.0 + (shape - 0.5) * 0.35 - (1.0 - profile) * 0.6;
+float hg(float c, float g) { float g2 = g * g; return (1.0 - g2) / (4.0 * PI * pow(1.0 + g2 - 2.0 * g * c, 1.5)); }
+float cloudDensity(vec3 wp, float alt, bool detail) {
+    float h = (alt - uCloudBase) / (uCloudTop - uCloudBase);
+    if (h < 0.0 || h > 1.0) return 0.0;
+    float cov = cloudCoverage(wp);
+    if (cov < 0.01) return 0.0;
+    float top = mix(0.3, 1.0, cov);                                    // bigger towers where cover is thick
+    float prof = smoothstep(0.0, 0.06, h) * smoothstep(top, top * 0.55, h);
+    vec4 n = texture(uNoise3, wp / 2900.0);
+    float fbm = n.g * 0.625 + n.b * 0.25 + n.a * 0.125;
+    float shape = n.r * 0.6 + fbm * 0.4;
+    float d = cov * prof - (1.0 - shape) * 0.62;
     if (d <= 0.0) return 0.0;
-    d -= (texture(uNoise3, wp / 700.0 + vec3(uTime * 0.001)).r - 0.5) * 0.12;
-    return clamp(d, 0.0, 1.0) * 0.012;
+    if (detail) {                                                      // eat away the edges: wispy at the base, billowy at the top
+        vec4 dn = texture(uNoise3, wp / 540.0 + vec3(uTime * 0.0015, 0.0, 0.0));
+        float det = dn.g * 0.625 + dn.b * 0.25 + dn.a * 0.125;
+        d -= mix(1.0 - det, det, clamp(h * 3.0, 0.0, 1.0)) * 0.2;
+    }
+    return clamp(d * 3.5, 0.0, 1.0) * 0.045;
 }
 void main() {
     vec2 p = vUV * 2.0 - 1.0;
@@ -589,41 +628,45 @@ void main() {
     float depth = texture(uDepth, vUV).r;
     float sceneW = exp2(depth / uFC) - 1.0;
     float sceneT = depth >= 0.99999 ? 1e9 : sceneW / max(dot(rd, uCamF), 1e-3);
-    // altitude along the ray, including the curve of the Earth: alt(t) = alt0 + t*mu - t^2/(2R)
     float mu = dot(rd, uU), R = 6371000.0;
     float tA = 0.0, tB = 0.0;
     float disc0 = mu * mu + 2.0 * (uCamAlt - uCloudBase) / R, disc1 = mu * mu + 2.0 * (uCamAlt - uCloudTop) / R;
     if (uCamAlt < uCloudBase) { if (disc0 >= 0.0 && mu > 0.0) { tA = R * (mu - sqrt(disc0)); tB = disc1 >= 0.0 ? R * (mu - sqrt(disc1)) : R * (mu + sqrt(disc0)); } else tB = -1.0; }
     else if (uCamAlt > uCloudTop) { if (disc1 >= 0.0 && mu < 0.0) { tA = R * (mu + sqrt(disc1)); tB = disc0 >= 0.0 ? R * (mu + sqrt(disc0)) : R * (mu - sqrt(disc1)); } else tB = -1.0; }
     else { tA = 0.0; tB = mu > 0.0 ? (disc1 >= 0.0 ? R * (mu - sqrt(disc1)) : 1e5) : (disc0 >= 0.0 ? R * (mu + sqrt(disc0)) : 1e5); }
-    tB = min(tB, min(sceneT, 90000.0));
+    tB = min(tB, min(sceneT, 120000.0));
     vec3 acc = vec3(0.0);
     float T = 1.0;
     if (tB > tA) {
-        const int N = 48;
-        float len = min(tB - tA, 30000.0), ds = len / float(N);
+        const int N = 72;
+        float len = min(tB - tA, 40000.0), ds = len / float(N);
         float t = tA + ds * ign(gl_FragCoord.xy + fract(uTime * 7.0) * 37.0);
-        vec3 skyAmb = textureLod(uSky, vec3(0.0, 1.0, 0.0), 6.0).rgb;
+        vec3 skyTop = textureLod(uSky, vec3(0.0, 1.0, 0.0), 5.0).rgb, skyHor = textureLod(uSky, normalize(vec3(1.0, 0.1, 0.0)), 5.0).rgb;
         float cosS = dot(rd, uSunDir);
-        float phase = mix(0.25 / PI * (1.0 - 0.36) / pow(1.0 + 0.36 - 1.2 * cosS, 1.5), 0.08, 0.3) + 0.12 * pow(max(cosS, 0.0), 12.0);
+        float sunUp = smoothstep(-0.05, 0.1, dot(uSunDir, uU));
         for (int i = 0; i < N; i++) {
-            vec3 rel = rd * t;
+            if (t > tB) break;
             float alt = uCamAlt + t * mu - t * t / (2.0 * R);
-            vec3 wp = rel + uCamWorldMod;
-            float d = cloudDensity(wp, alt);
+            vec3 wp = rd * t + uCamWorldMod;
+            float d = cloudDensity(wp, alt, t < 25000.0);
             if (d > 0.0) {
-                float od = 0.0;
-                for (int j = 1; j <= 4; j++) { float st = 120.0 * float(j * j); od += cloudDensity(wp + uSunDir * st, alt + dot(uSunDir, uU) * st) * st * 0.6; }
-                float beer = exp(-od * 1.4), powder = 1.0 - exp(-d * 260.0);
-                vec3 L = uSunCol * beer * powder * phase * 6.0 + skyAmb * (0.6 + 0.4 * (alt - uCloudBase) / (uCloudTop - uCloudBase)) * 1.6;
-                float a = exp(-d * ds);
-                acc += T * (1.0 - a) * L;
-                T *= a;
-                if (T < 0.02) break;
-            }
-            t += ds;
+                float od = 0.0, st = 60.0;
+                vec3 lp = wp; float la = alt;
+                for (int j = 0; j < 6; j++) { lp += uSunDir * st; la += dot(uSunDir, uU) * st; od += cloudDensity(lp, la, false) * st; st *= 1.7; }
+                float h = clamp((alt - uCloudBase) / (uCloudTop - uCloudBase), 0.0, 1.0);
+                vec3 Ls = vec3(0.0); float a = 1.0, b = 1.0, c = 1.0;
+                for (int k = 0; k < 3; k++) { Ls += uSunCol * exp(-od * b) * (hg(cosS, 0.65 * c) * 0.8 + hg(cosS, -0.25 * c) * 0.2) * a; a *= 0.5; b *= 0.45; c *= 0.5; }
+                float powder = 1.0 - exp(-d * 120.0);
+                vec3 amb = mix(skyHor * 0.35 + vec3(0.02), skyTop * 1.25 + skyHor * 0.2, h);   // dark flat bases, bright tops
+                vec3 L = Ls * mix(0.6, 1.0, powder) * 3.2 * sunUp + amb;
+                float tr = exp(-d * ds);
+                acc += T * (1.0 - tr) * L;
+                T *= tr;
+                if (T < 0.015) break;
+                t += ds;
+            } else t += ds * 1.6;
         }
-        float far = 1.0 - smoothstep(30000.0, 90000.0, tA);
+        float far = 1.0 - smoothstep(45000.0, 115000.0, tA);
         T = mix(1.0, T, far); acc *= far;
         float fogA = fogAmount(max(tA, 0.0), uCamAlt, clamp(uCamAlt, uCloudBase, uCloudTop));
         vec3 fogc = skyColor(normalize(rd + uU * 0.03), 2.0);
