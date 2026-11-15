@@ -249,3 +249,51 @@ void flight_step(Flight *f, float dt) {
     f->rpm += (target - f->rpm) * (1 - expf(-dt * (a->jet ? 0.6f : 3.0f)));
     f->propAngle = fmodf(f->propAngle + (a->jet ? f->rpm * 0.6f : f->rpm) / 60 * 2 * PI * dt * (a->jet ? 1 : 0.35f), 2 * PI * 64);
 }
+
+/* Carry the aircraft to another spot on the globe: attitude, velocity and spin are expressed in the old
+ * local east/north/up frame, turned by turn_deg about the vertical, and rebuilt in the new frame. */
+static v3 reframe(v3 w, v3 e0, v3 n0, v3 u0, v3 e1, v3 n1, v3 u1, float c, float s) {
+    float E = vdot(w, e0), N = vdot(w, n0), U = vdot(w, u0);
+    float E2 = E * c + N * s, N2 = N * c - E * s;
+    return vadd(vadd(vmul(e1, E2), vmul(n1, N2)), vmul(u1, U));
+}
+void flight_move_to(Flight *f, double lat, double lon, double alt, float turn_deg) {
+    double la0, lo0, al0;
+    ecef_to_geo(f->pos, &la0, &lo0, &al0);
+    v3 e0, n0, u0, e1, n1, u1;
+    enu_basis(la0, lo0, &e0, &n0, &u0);
+    enu_basis(lat, lon, &e1, &n1, &u1);
+    float c = cosf(turn_deg * DEG), s = sinf(turn_deg * DEG);
+    v3 F = q_rot(f->rot, V(0, 0, 1)), Up = q_rot(f->rot, V(0, 1, 0));
+    F = reframe(F, e0, n0, u0, e1, n1, u1, c, s); Up = reframe(Up, e0, n0, u0, e1, n1, u1, c, s);
+    v3 air = vsub(f->vel, f->wind);
+    air = reframe(air, e0, n0, u0, e1, n1, u1, c, s);
+    f->wind = reframe(f->wind, e0, n0, u0, e1, n1, u1, c, s);
+    f->vel = vadd(air, f->wind);
+    f->omega = reframe(f->omega, e0, n0, u0, e1, n1, u1, c, s);
+    f->rot = q_look(F, Up);
+    f->pos = geo_to_ecef(lat, lon, alt);
+    f->lat = lat; f->lon = lon; f->alt = alt; f->east = e1; f->north = n1; f->up = u1;
+}
+/* Time warp in cruise: slide along the great circle at the current ground speed and climb rate,
+ * keeping the attitude relative to the ground track.  Real physics still runs alongside. */
+void flight_cruise(Flight *f, float dt) {
+    if (f->crashed || f->onGround || dt <= 0) return;
+    double lat, lon, alt;
+    ecef_to_geo(f->pos, &lat, &lon, &alt);
+    v3 e, n, u; enu_basis(lat, lon, &e, &n, &u);
+    float ve = vdot(f->vel, e), vn = vdot(f->vel, n), vu = vdot(f->vel, u);
+    double gs = sqrt((double)ve * ve + (double)vn * vn);
+    if (gs < 1) return;
+    double brg = atan2(ve, vn) / (M_PI / 180), la2, lo2;
+    /* split long hops so the track follows the great circle closely */
+    double d = gs * dt, done = 0, b = brg, la = lat, lo = lon;
+    while (done < d) {
+        double step = fmin(d - done, 50000.0);
+        geo_offset(la, lo, b, step, &la2, &lo2);
+        b = fmod(geo_bearing(la2, lo2, la, lo) + 180, 360);
+        la = la2; lo = lo2; done += step;
+    }
+    float turn = (float)(fmod(b - brg + 540, 360) - 180);
+    flight_move_to(f, la, lo, alt + vu * dt, turn);
+}

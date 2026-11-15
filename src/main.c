@@ -35,6 +35,9 @@ static d3 flybyPos; static bool flybyOk;
 static d3 towerPos; static float towerTimer;
 static Camera cam;
 static bool showHud = true, showMap, showFps, showHelp, paused, parkBrake;
+static bool searchFly;
+static int argPos; static double posLat, posLon, posAlt; static float posHdg;            /* the airport search was opened from the pause menu: go straight there */
+static double mapDX, mapDY; static int mapDownX, mapDownY; static bool mapDrag;   /* map panning, in tiles at mapZoom */
 static int mapZoom = 11;
 static float simRate = 1;
 static bool ap; static float apAlt, apHdg, apSpd;
@@ -160,6 +163,8 @@ static void settings_defaults(void) {
     S.imagery_max_zoom = 14; S.elevation_max_zoom = 13; S.threads = 8; S.texture_budget = 1536; S.detail = 1.0f; S.offline = false;
     snprintf(S.vector_tilejson, sizeof S.vector_tilejson, "https://tiles.openfreemap.org/planet");
     S.buildings = true;
+    snprintf(S.traffic_url, sizeof S.traffic_url, "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist}");
+    S.traffic = true; S.labels = true;
     home_path(cfgPath, sizeof cfgPath, "XDG_CONFIG_HOME", ".config", "/wingmere.cfg");
     home_path(scorePath, sizeof scorePath, "XDG_DATA_HOME", ".local/share", "/scores.txt");
 }
@@ -193,6 +198,9 @@ static void settings_load(void) {
         else if (!strcmp(k, "vector_tilejson")) snprintf(S.vector_tilejson, sizeof S.vector_tilejson, "%s", v);
         else if (!strcmp(k, "vector_url")) snprintf(S.vector_url, sizeof S.vector_url, "%s", v);
         else if (!strcmp(k, "buildings")) S.buildings = atoi(v);
+        else if (!strcmp(k, "traffic")) S.traffic = atoi(v);
+        else if (!strcmp(k, "traffic_url")) snprintf(S.traffic_url, sizeof S.traffic_url, "%s", v);
+        else if (!strcmp(k, "traffic_labels")) S.labels = atoi(v);
         else if (!strcmp(k, "width")) rc.w = atoi(v);
         else if (!strcmp(k, "height")) rc.h = atoi(v);
         else if (!strcmp(k, "fullscreen")) fullscreen = atoi(v);
@@ -227,6 +235,7 @@ static void settings_save(void) {
     char defCache[512]; home_path(defCache, sizeof defCache, "XDG_CACHE_HOME", ".cache", "");
     if (strcmp(defCache, S.cache_dir)) fprintf(f, "cache_dir = %s\n", S.cache_dir);
     fprintf(f, "elevation_url = %s\nvector_tilejson = %s\nbuildings = %d\n", S.elevation_url, S.vector_tilejson, S.buildings);
+    fprintf(f, "traffic = %d\ntraffic_url = %s\ntraffic_labels = %d\n", S.traffic, S.traffic_url, S.labels);
     fprintf(f, "imagery_max_zoom = %d\nelevation_max_zoom = %d\nthreads = %d\ntexture_budget = %d\ndetail = %.2f\noffline = %d\n",
             S.imagery_max_zoom, S.elevation_max_zoom, S.threads, S.texture_budget, S.detail, cliOffline ? cfgOffline : S.offline);
     fprintf(f, "width = %d\nheight = %d\nfullscreen = %d\nmsaa = %d\nrender_scale = %.2f\nshadow_res = %d\nclouds = %d\nvolume = %.2f\ninvert_pitch = %d\n",
@@ -358,6 +367,12 @@ static void start_flight(void) {
     spawn();
     int q, b, ok, fail; tiles_stats(&q, &b, &ok, &fail); loadQueue0 = q + b + 1;
     if (chalActive < 0) settings_save();
+}
+static void search_pick(int i) {
+    select_airport(searchRes[i], NULL);
+    SDL_StopTextInput();
+    if (searchFly) { searchFly = false; showMap = false; simRate = 1; start_flight(); }
+    else { spawn(); state = ST_MENU; }
 }
 static void start_challenge(int i) {
     const Challenge *c = &CH[i];
@@ -609,8 +624,9 @@ static float W, H, s_;
 #define SZ(v) ((v) * s_)
 static void panel(float x, float y, float w, float h, float a) { hud_rect(x, y, w, h, 0.02f, 0.02f, 0.025f, a); hud_rect(x, y, w, SZ(2), RED, 0.9f); }
 static void attribution(float a) {
-    char b[320];
-    snprintf(b, sizeof b, "%s  ELEVATION: TERRAIN TILES (MAPZEN, AWS)  MAP DATA: OPENSTREETMAP CONTRIBUTORS, OPENMAPTILES, OPENFREEMAP  AIRPORTS: OURAIRPORTS", S.offline ? "OFFLINE WORLD" : PROV[provSel].attr);
+    char b[400];
+    snprintf(b, sizeof b, "%s  ELEVATION: TERRAIN TILES (MAPZEN, AWS)  MAP DATA: OPENSTREETMAP CONTRIBUTORS, OPENMAPTILES, OPENFREEMAP  AIRPORTS: OURAIRPORTS%s", S.offline ? "OFFLINE WORLD" : PROV[provSel].attr,
+             S.traffic && !S.offline ? "  TRAFFIC: ADSB.LOL (ODBL)" : "");
     hud_text(W - SZ(12), H - SZ(5), SZ(9), b, WHITE, a, 2);
 }
 static void draw_compass(float cx, float y, float w) {
@@ -818,7 +834,7 @@ static void draw_flight_hud(void) {
     hud_text(SZ(24), SZ(36), SZ(15), b, WHITE, 0.95f, 0);
     snprintf(b, sizeof b, "%s CAM", CAM_NAME[camMode]);
     hud_text(SZ(24), SZ(58), SZ(11), b, GREY, 0.9f, 0);
-    if (simRate != 1) { snprintf(b, sizeof b, "SIM RATE X%.0f", simRate); hud_text(SZ(24), SZ(78), SZ(12), b, AMBER, 0.95f, 0); }
+    if (simRate != 1) { snprintf(b, sizeof b, simRate > 4 ? "TIME WARP X%.0f" : "SIM RATE X%.0f", simRate); hud_text(SZ(24), SZ(78), SZ(12), b, AMBER, 0.95f, 0); }
     if (ap) {
         snprintf(b, sizeof b, "AP  HDG %03.0f  ALT %d  SPD %d", fmodf(apHdg + 360, 360), (int)lroundf(apAlt / FT / 100) * 100, (int)lroundf(apSpd / KT));
         hud_text(SZ(24), SZ(100), SZ(13), b, GREEN, 0.95f, 0);
@@ -877,44 +893,124 @@ static void draw_flight_hud(void) {
         }
     }
 }
+/* where the map is looking (the aircraft, plus however far it has been dragged) */
+static void map_center(double *cx, double *cy) {
+    int n = 1 << mapZoom;
+    *cx = merc_x(FL.lon, mapZoom) + mapDX;
+    *cy = clampf((float)(merc_y(FL.lat, mapZoom) + mapDY), 0, (float)n);
+}
+static float map_tile_px(void) { return 256 * (H / 1080.0f) * 1.2f; }
+static void map_to_screen(double lat, double lon, double cx, double cy, float *x, float *y) {
+    int n = 1 << mapZoom;
+    double dx = merc_x(lon, mapZoom) - cx;
+    dx -= n * floor(dx / n + 0.5);       /* the short way round the dateline */
+    *x = W / 2 + (float)(dx * map_tile_px()); *y = H / 2 + (float)((merc_y(lat, mapZoom) - cy) * map_tile_px());
+}
+static void teleport(double lat, double lon, double alt, float heading);
+/* click on the map to go there: same heading, speed and height (at least 900 m above whatever is below) */
+static void map_teleport(float sx, float sy) {
+    double cx, cy; map_center(&cx, &cy);
+    double mx = cx + (sx - W / 2) / map_tile_px(), my = cy + (sy - H / 2) / map_tile_px();
+    int n = 1 << mapZoom;
+    double lon = merc_lon(fmod(fmod(mx, n) + n, n), mapZoom), lat = merc_lat(clampf((float)my, 0, (float)n), mapZoom);
+    if (my <= 0.001) lat = 89.9; else if (my >= n - 0.001) lat = -89.9;
+    teleport(lat, lon, fmax(FL.alt, fmax(terrain_height(lat, lon, NULL, NULL) + 900.0, 1500.0)), -1);
+}
+static void teleport(double lat, double lon, double alt, float heading) {
+    if (FL.onGround || heading >= 0) {
+        /* parked: launch into the air at a sensible cruise */
+        float spd = FL.def->jet ? 128.0f : FL.def->v_cruise * 0.9f;
+        flight_reset(&FL, FL.def, lat, lon, (float)alt, heading >= 0 ? heading : FL.heading, spd, false);
+        if (FL.def->retract) FL.gearDown = FL.gearCmd = 0;
+        FL.flapsSet = 0; FL.flaps = 0; parkBrake = false;
+        flight_trim(&FL, 0);
+        if (assist) { athr = true; athrSpd = spd; }
+    } else flight_move_to(&FL, lat, lon, alt, 0);
+    flight_step(&FL, 1e-4f);
+    holdInit = false; chaseInit = false; mapDX = mapDY = 0; fx_clear();
+    char b[96]; snprintf(b, sizeof b, "TELEPORTED TO %.3f %.3f", lat, lon); say(b);
+}
 static void draw_map(void) {
     float m = SZ(40);
     hud_rect(0, 0, W, H, 0, 0, 0, 0.55f);
     hud_end();
+    double cx, cy; map_center(&cx, &cy);
+    double clon = merc_lon(cx, mapZoom), clat = merc_lat(cy, mapZoom);
     glEnable(GL_SCISSOR_TEST); glScissor((int)m, (int)m, (int)(W - 2 * m), (int)(H - 2 * m));
-    terrain_draw_map(g_progMap, FL.lat, FL.lon, mapZoom, W, H);
+    terrain_draw_map(g_progMap, clat, clon, mapZoom, W, H);
     glDisable(GL_SCISSOR_TEST);
     hud_begin();
-    float tilePx = 256 * (H / 1080.0f) * 1.2f;
-    double cx = merc_x(FL.lon, mapZoom), cy = merc_y(FL.lat, mapZoom);
+    float tilePx = map_tile_px();
     hud_clip(m, m, W - 2 * m, H - 2 * m);
-    double radius = (W / tilePx) * 40075000.0 * cos(FL.lat * M_PI / 180) / (1 << mapZoom);
-    int list[400], n = runways_near(FL.lat, FL.lon, fmin(radius, 400000), list, 400);
-    int lastApt = -1;
-    for (int k = 0; k < n; k++) {
-        Runway *r = &g_runways[list[k]];
-        float x0 = W / 2 + (float)((merc_x(r->lon1, mapZoom) - cx) * tilePx), y0 = H / 2 + (float)((merc_y(r->lat1, mapZoom) - cy) * tilePx);
-        float x1 = W / 2 + (float)((merc_x(r->lon2, mapZoom) - cx) * tilePx), y1 = H / 2 + (float)((merc_y(r->lat2, mapZoom) - cy) * tilePx);
-        hud_line(x0, y0, x1, y1, fmaxf(SZ(3), r->width * tilePx / 256 * (1 << mapZoom) / 156543.0f), WHITE, 0.9f);
-        if (r->airport != lastApt) { lastApt = r->airport; hud_text((x0 + x1) / 2 + SZ(8), (y0 + y1) / 2 - SZ(8), SZ(12), g_airports[r->airport].ident, AMBER, 0.95f, 0); }
+    double radius = (W / tilePx) * 40075000.0 * cos(clat * M_PI / 180) / (1 << mapZoom);
+    if (mapZoom >= 6) {
+        int list[400], n = runways_near(clat, clon, fmin(radius, 400000), list, 400);
+        int lastApt = -1;
+        for (int k = 0; k < n; k++) {
+            Runway *r = &g_runways[list[k]];
+            float x0, y0, x1, y1;
+            map_to_screen(r->lat1, r->lon1, cx, cy, &x0, &y0); map_to_screen(r->lat2, r->lon2, cx, cy, &x1, &y1);
+            hud_line(x0, y0, x1, y1, fmaxf(SZ(3), r->width * tilePx / 256 * (1 << mapZoom) / 156543.0f), WHITE, 0.9f);
+            if (r->airport != lastApt) { lastApt = r->airport; hud_text((x0 + x1) / 2 + SZ(8), (y0 + y1) / 2 - SZ(8), SZ(12), g_airports[r->airport].ident, AMBER, 0.95f, 0); }
+        }
+    }
+    /* live traffic */
+    for (int i = 0; i < g_ntraffic; i++) {
+        Traffic *t = &g_traffic[i];
+        float x, y; map_to_screen(t->lat, t->lon, cx, cy, &x, &y);
+        if (x < m || y < m || x > W - m || y > H - m) continue;
+        float a = t->prevTrack * DEG, sz = SZ(7), fx = sinf(a), fy = -cosf(a);
+        float c = t->ground ? 0.6f : 1.0f;
+        hud_tri(x + fx * sz, y + fy * sz, x - fx * sz * 0.6f - fy * sz * 0.6f, y - fy * sz * 0.6f + fx * sz * 0.6f, x - fx * sz * 0.6f + fy * sz * 0.6f, y - fy * sz * 0.6f - fx * sz * 0.6f, 0.95f * c, 0.75f * c, 0.2f * c, 0.95f);
+        if (mapZoom >= 8 && !t->ground) {
+            char b[40]; snprintf(b, sizeof b, "%s %s", t->callsign, t->type);
+            hud_text(x + SZ(9), y + SZ(4), SZ(10), b, 0.95f, 0.8f, 0.4f, 0.9f, 0);
+        }
     }
     hud_clip_off();
     /* the aircraft */
-    float hd = FL.heading * DEG, x = W / 2, y = H / 2, sz = SZ(14);
+    float x, y; map_to_screen(FL.lat, FL.lon, cx, cy, &x, &y);
+    float hd = FL.heading * DEG, sz = SZ(14);
     float fxv = sinf(hd), fyv = -cosf(hd);
     hud_tri(x + fxv * sz, y + fyv * sz, x - fxv * sz * 0.6f - fyv * sz * 0.7f, y - fyv * sz * 0.6f + fxv * sz * 0.7f, x - fxv * sz * 0.6f + fyv * sz * 0.7f, y - fyv * sz * 0.6f - fxv * sz * 0.7f, RED, 1);
-    char b[96];
-    snprintf(b, sizeof b, "MAP  ZOOM %d   +/- TO ZOOM   M TO CLOSE", mapZoom);
-    hud_text(m + SZ(10), m + SZ(26), SZ(14), b, WHITE, 0.95f, 0);
+    char b[128];
+    snprintf(b, sizeof b, "MAP  ZOOM %d   WHEEL OR +/- ZOOM   DRAG TO PAN   CLICK TO TELEPORT   M CLOSE", mapZoom);
+    hud_text(m + SZ(10), m + SZ(26), SZ(13), b, WHITE, 0.95f, 0);
     snprintf(b, sizeof b, "%.4f %.4f", FL.lat, FL.lon);
     hud_text(W - m - SZ(10), m + SZ(26), SZ(12), b, WHITE, 0.9f, 2);
+    int tc; bool ok = traffic_status(&tc);
+    if (S.traffic && !S.offline) {
+        snprintf(b, sizeof b, ok ? "LIVE TRAFFIC: %d AIRCRAFT  (ADSB.LOL, ODBL)" : (tc ? "LIVE TRAFFIC: %d AIRCRAFT, FEED STALE" : "LIVE TRAFFIC: CONNECTING"), tc);
+        hud_text(m + SZ(10), H - m - SZ(12), SZ(11), b, AMBER, 0.9f, 0);
+    }
+}
+/* callsigns over the real aircraft around you */
+static void draw_traffic_labels(void) {
+    if (!S.labels || !g_ntraffic) return;
+    for (int i = 0; i < g_ntraffic; i++) {
+        Traffic *t = &g_traffic[i];
+        double d = geo_dist(FL.lat, FL.lon, t->lat, t->lon);
+        if (d > 40000 || d < 60) continue;
+        float sx, sy;
+        if (!world_to_screen(geo_to_ecef(t->lat, t->lon, t->alt + 12), &cam, &sx, &sy)) continue;
+        if (sx < 0 || sy < 0 || sx > W || sy > H) continue;
+        float a = (float)(1 - smooth(25000, 40000, (float)d)) * 0.9f;
+        char b[64], c[64];
+        hud_line(sx, sy - SZ(6), sx, sy - SZ(22), SZ(1.5f), 0.95f, 0.75f, 0.25f, a * 0.8f);
+        snprintf(b, sizeof b, "%s", t->callsign);
+        if (t->ground) snprintf(c, sizeof c, "%s  GND %.0f KT", t->type[0] ? t->type : "?", t->gs / KT);
+        else snprintf(c, sizeof c, "%s  FL%03d  %.0f KT  %.1f NM", t->type[0] ? t->type : "?", (int)lround(t->alt / FT / 100), t->gs / KT, d / 1852);
+        hud_text(sx, sy - SZ(40), SZ(12), b, 1.0f, 0.82f, 0.35f, a, 1);
+        hud_text(sx, sy - SZ(26), SZ(9), c, 0.95f, 0.9f, 0.8f, a * 0.9f, 1);
+    }
 }
 static void draw_help(void) {
     static const char *L[] = {
         "W S / UP DOWN     PITCH (S PULLS THE NOSE UP)", "A D / LEFT RIGHT  ROLL", "Q E               RUDDER AND NOSEWHEEL",
         "R F / PGUP PGDN   THROTTLE    1-9 0  SET THROTTLE   `  IDLE", "G                 LANDING GEAR", "V B               FLAPS DOWN / UP",
         "SPACE             BRAKES (SHIFT+SPACE PARKING BRAKE)", ", .               TRIM NOSE DOWN / UP", "Z                 AUTOPILOT (CONTROLS THEN ADJUST ITS TARGETS)",
-        "C  F2-F7          CAMERAS     RIGHT MOUSE  LOOK / ORBIT   WHEEL  ZOOM", "M                 MAP", "P  TAB            PAUSE  SIM RATE",
+        "C  F2-F7          CAMERAS     RIGHT MOUSE  LOOK / ORBIT   WHEEL  ZOOM", "M                 WORLD MAP (CLICK ANYWHERE TO TELEPORT)",
+        "P  TAB            PAUSE  SIM RATE / TIME WARP UP TO X64 (SHIFT+TAB DOWN)", "L                 LIVE TRAFFIC LABELS",
         "H  F3             HIDE HUD  FPS", "T  SHIFT+T        TIME OF DAY", "F12               SCREENSHOT", "ESC               MENU",
     };
     int n = (int)(sizeof L / sizeof L[0]);
@@ -1072,7 +1168,7 @@ static void draw_hangar(void) {
     }
     hud_text(x + SZ(30), y + h - SZ(18), SZ(11), "LEFT RIGHT CHANGE   ESC BACK   RIGHT MOUSE TO LOOK AROUND", GREY, 1, 0);
 }
-enum { SI_ASSIST, SI_GUIDE, SI_IMAGERY, SI_DETAIL, SI_SCALE, SI_MSAA, SI_CLOUDS, SI_SHADOW, SI_VOLUME, SI_INVERT, SI_FULL, SI_OFFLINE, SI_BACK, SI_N };
+enum { SI_ASSIST, SI_GUIDE, SI_IMAGERY, SI_DETAIL, SI_SCALE, SI_MSAA, SI_CLOUDS, SI_SHADOW, SI_VOLUME, SI_INVERT, SI_FULL, SI_OFFLINE, SI_TRAFFIC, SI_BACK, SI_N };
 static void draw_settings(void) {
     draw_menu();
     float w = SZ(700), h = SZ(110) + SI_N * SZ(46), x = (W - w) / 2, y = (H - h) / 2;
@@ -1094,6 +1190,7 @@ static void draw_settings(void) {
         case SI_INVERT: l = "INVERT PITCH"; snprintf(v, sizeof v, invertPitch ? "ON" : "OFF"); break;
         case SI_FULL: l = "FULLSCREEN"; snprintf(v, sizeof v, fullscreen ? "ON" : "OFF"); break;
         case SI_OFFLINE: l = "OFFLINE (PROCEDURAL WORLD)"; snprintf(v, sizeof v, S.offline ? "ON" : "OFF"); break;
+        case SI_TRAFFIC: l = "LIVE AIR TRAFFIC (ADSB.LOL)"; snprintf(v, sizeof v, S.traffic ? (S.labels ? "ON + LABELS" : "ON") : "OFF"); break;
         case SI_BACK: l = "BACK"; break;
         }
         float iy = y + SZ(110) + i * SZ(46);
@@ -1129,13 +1226,13 @@ static void draw_credits(void) {
     }
     hud_text(SZ(80), H - SZ(30), SZ(12), "ESC TO GO BACK", GREY, 1, 0);
 }
-static const char *PAUSE_ITEMS[4] = {"RESUME", "RESTART", "MAIN MENU", "QUIT"};
+static const char *PAUSE_ITEMS[5] = {"RESUME", "RESTART", "FLY FROM ANOTHER AIRPORT", "MAIN MENU", "QUIT"};
 static void draw_pause(void) {
-    float w = SZ(460), h = SZ(260), x = (W - w) / 2, y = (H - h) / 2;
+    float w = SZ(500), h = SZ(302), x = (W - w) / 2, y = (H - h) / 2;
     panel(x, y, w, h, 0.9f);
     hud_title(x + SZ(24), y + SZ(48), SZ(26), "PAUSED", RED, 1, 0);
-    nItems = 4;
-    for (int i = 0; i < 4; i++) {
+    nItems = 5;
+    for (int i = 0; i < 5; i++) {
         float iy = y + SZ(100) + i * SZ(42);
         itemBox[i] = (Box){x + SZ(16), iy - SZ(28), w - SZ(32), SZ(38)};
         if (i == pauseSel) hud_rect(x + SZ(16), iy - SZ(28), w - SZ(32), SZ(38), RED, 0.85f);
@@ -1324,7 +1421,7 @@ static void menu_activate(int item) {
     case MI_FREE: chalActive = -1; start_flight(); break;
     case MI_CHAL: state = ST_CHAL; break;
     case MI_HANGAR: state = ST_HANGAR; hangSel = 0; break;
-    case MI_AIRPORT: state = ST_SEARCH; search[0] = 0; nSearch = 0; searchSel = 0; SDL_StartTextInput(); break;
+    case MI_AIRPORT: searchFly = false; state = ST_SEARCH; search[0] = 0; nSearch = 0; searchSel = 0; SDL_StartTextInput(); break;
     case MI_WIND: windDir = fmodf(windDir + 30, 360); break;
     case MI_SETTINGS: state = ST_SETTINGS; setSel = 0; break;
     case MI_CREDITS: state = ST_CREDITS; break;
@@ -1346,6 +1443,7 @@ static void settings_change(int d) {
     case SI_INVERT: invertPitch = !invertPitch; break;
     case SI_FULL: fullscreen = !fullscreen; SDL_SetWindowFullscreen(win, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0); break;
     case SI_OFFLINE: S.offline = !S.offline; break;
+    case SI_TRAFFIC: if (!S.traffic) { S.traffic = true; S.labels = true; } else if (S.labels) S.labels = false; else S.traffic = false; traffic_enable(S.traffic); break;
     case SI_BACK: if (d) return; state = ST_MENU; break;
     }
     settings_save();
@@ -1373,7 +1471,15 @@ static void handle_event(SDL_Event *e) {
     if (e->type == SDL_CONTROLLERDEVICEREMOVED && pad) { SDL_GameControllerClose(pad); pad = NULL; return; }
     if (e->type == SDL_MOUSEMOTION) {
         int dw, dh, ww, wh; SDL_GL_GetDrawableSize(win, &dw, &dh); SDL_GetWindowSize(win, &ww, &wh);
+        int px = mouseX, py = mouseY;
         mouseX = e->motion.x * dw / (ww ? ww : 1); mouseY = e->motion.y * dh / (wh ? wh : 1);
+        if (mapDrag && showMap) {
+            if (abs(mouseX - mapDownX) + abs(mouseY - mapDownY) >= 6) {
+                float tp = 256 * ((float)dh / 1080.0f) * 1.2f;
+                mapDX -= (mouseX - px) / tp; mapDY -= (mouseY - py) / tp;
+            }
+            return;
+        }
         if (mouseLook) {
             if (camMode == CAM_COCKPIT) { lookYaw = clampf(lookYaw + e->motion.xrel * 0.004f, -2.6f, 2.6f); lookPitch = clampf(lookPitch + e->motion.yrel * 0.004f, -1.2f, 1.2f); }
             else { camYaw -= e->motion.xrel * 0.005f; camPitch = clampf(camPitch + e->motion.yrel * 0.004f, -0.25f, 1.45f); }
@@ -1387,22 +1493,28 @@ static void handle_event(SDL_Event *e) {
     }
     if (e->type == SDL_MOUSEBUTTONDOWN) {
         if (e->button.button == SDL_BUTTON_RIGHT || e->button.button == SDL_BUTTON_MIDDLE) { mouseLook = true; SDL_SetRelativeMouseMode(SDL_TRUE); return; }
+        if (e->button.button == SDL_BUTTON_LEFT && state == ST_FLY && showMap) { mapDrag = true; mapDownX = mouseX; mapDownY = mouseY; return; }
         if (e->button.button == SDL_BUTTON_LEFT) {
             for (int i = 0; i < nItems; i++) if (hover(i)) {
                 if (state == ST_MENU) { menuSel = i; menu_activate(i); }
                 else if (state == ST_SETTINGS) { setSel = i; settings_change(i == SI_BACK ? 0 : 1); }
                 else if (state == ST_CHAL) { chalSel = i; start_challenge(i); }
                 else if (state == ST_HANGAR) { hangSel = i; hangar_change(i == HI_BACK ? 0 : 1); }
-                else if (state == ST_SEARCH) { select_airport(searchRes[i], NULL); spawn(); SDL_StopTextInput(); state = ST_MENU; }
+                else if (state == ST_SEARCH) search_pick(i);
                 else if (state == ST_PAUSE) { pauseSel = i; SDL_Event k = {0}; k.type = SDL_KEYDOWN; k.key.keysym.sym = SDLK_RETURN; handle_event(&k); }
                 return;
             }
         }
         return;
     }
+    if (e->type == SDL_MOUSEBUTTONUP && e->button.button == SDL_BUTTON_LEFT && mapDrag) {
+        mapDrag = false;
+        if (state == ST_FLY && showMap && abs(mouseX - mapDownX) + abs(mouseY - mapDownY) < 6) map_teleport((float)mouseX, (float)mouseY);
+        return;
+    }
     if (e->type == SDL_MOUSEBUTTONUP && (e->button.button == SDL_BUTTON_RIGHT || e->button.button == SDL_BUTTON_MIDDLE)) { mouseLook = false; SDL_SetRelativeMouseMode(SDL_FALSE); return; }
     if (e->type == SDL_MOUSEWHEEL) {
-        if (showMap) mapZoom = (int)clampf((float)(mapZoom + e->wheel.y), 5, (float)S.imagery_max_zoom);
+        if (showMap) { int nz = (int)clampf((float)(mapZoom + e->wheel.y), 2, (float)S.imagery_max_zoom); while (nz > mapZoom) { mapZoom++; mapDX *= 2; mapDY *= 2; } while (nz < mapZoom) { mapZoom--; mapDX /= 2; mapDY /= 2; } }
         else camZoom = clampf(camZoom * (e->wheel.y > 0 ? 0.88f : 1.13f), 0.3f, 4.0f);
         return;
     }
@@ -1437,15 +1549,15 @@ static void handle_event(SDL_Event *e) {
         else if (key == SDLK_RETURN || key == SDLK_KP_ENTER || key == SDLK_SPACE) menu_activate(menuSel);
         else if (key == SDLK_ESCAPE) running = false;
         else if (menuSel == MI_AIRPORT && ((key >= SDLK_a && key <= SDLK_z) || (key >= SDLK_0 && key <= SDLK_9))) {
-            state = ST_SEARCH; search[0] = 0; nSearch = 0; searchSel = 0; SDL_StartTextInput();
+            searchFly = false; state = ST_SEARCH; search[0] = 0; nSearch = 0; searchSel = 0; SDL_StartTextInput();
         }
         break;
     case ST_SEARCH:
-        if (key == SDLK_ESCAPE) { state = ST_MENU; SDL_StopTextInput(); }
+        if (key == SDLK_ESCAPE) { state = searchFly ? ST_PAUSE : ST_MENU; searchFly = false; SDL_StopTextInput(); }
         else if (key == SDLK_BACKSPACE) { size_t n = strlen(search); if (n) search[n - 1] = 0; do_search(); }
         else if (key == SDLK_UP && nSearch) searchSel = (searchSel + nSearch - 1) % nSearch;
         else if (key == SDLK_DOWN && nSearch) searchSel = (searchSel + 1) % nSearch;
-        else if ((key == SDLK_RETURN || key == SDLK_KP_ENTER) && nSearch) { select_airport(searchRes[searchSel], NULL); spawn(); SDL_StopTextInput(); state = ST_MENU; audio_event(0); }
+        else if ((key == SDLK_RETURN || key == SDLK_KP_ENTER) && nSearch) { search_pick(searchSel); audio_event(0); }
         break;
     case ST_CHAL:
         if (key == SDLK_ESCAPE) state = ST_MENU;
@@ -1474,12 +1586,13 @@ static void handle_event(SDL_Event *e) {
         break;
     case ST_PAUSE:
         if (key == SDLK_ESCAPE) state = ST_FLY;
-        else if (key == SDLK_UP) cycle(&pauseSel, 4, -1);
-        else if (key == SDLK_DOWN) cycle(&pauseSel, 4, 1);
+        else if (key == SDLK_UP) cycle(&pauseSel, 5, -1);
+        else if (key == SDLK_DOWN) cycle(&pauseSel, 5, 1);
         else if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
             if (pauseSel == 0) state = ST_FLY;
             else if (pauseSel == 1) { if (chalActive >= 0) start_challenge(chalActive); else start_flight(); }
-            else if (pauseSel == 2) { state = ST_MENU; chalActive = -1; restore_free(); camMode = CAM_ORBIT; spawn(); }
+            else if (pauseSel == 2) { state = ST_SEARCH; searchFly = true; chalActive = -1; restore_free(); search[0] = 0; nSearch = 0; searchSel = 0; SDL_StartTextInput(); }
+            else if (pauseSel == 3) { state = ST_MENU; chalActive = -1; restore_free(); camMode = CAM_ORBIT; spawn(); }
             else running = false;
         }
         break;
@@ -1502,18 +1615,25 @@ static void handle_event(SDL_Event *e) {
         else if (key == SDLK_c) { cycle(&camMode, NCAM, shift ? -1 : 1); flybyOk = false; towerTimer = 0; lookYaw = lookPitch = 0; }
         else if (key >= SDLK_F2 && key <= SDLK_F7) { camMode = key - SDLK_F2; flybyOk = false; towerTimer = 0; lookYaw = lookPitch = 0; }
         else if (key == SDLK_KP_5) { camYaw = 0; camPitch = 0.16f; camZoom = 1; lookYaw = lookPitch = 0; }
-        else if (key == SDLK_m) showMap = !showMap;
+        else if (key == SDLK_m) { showMap = !showMap; mapDX = mapDY = 0; }
         else if (key == SDLK_h) showHud = !showHud;
         else if (key == SDLK_F3) showFps = !showFps;
         else if (key == SDLK_F1) showHelp = !showHelp;
         else if (key == SDLK_p) paused = !paused;
-        else if (key == SDLK_TAB) { simRate = simRate >= 4 ? 1 : simRate * 2; }
+        else if (key == SDLK_TAB) {
+            /* 2x and 4x run the full physics; past that it is a cruise time warp for crossing oceans */
+            float nr = shift ? (simRate <= 1 ? 1 : simRate / 2) : (simRate >= 64 ? 1 : simRate * 2);
+            if (nr > 4 && (FL.onGround || FL.agl < 300)) { say("TIME WARP NEEDS 300 M ABOVE THE GROUND"); nr = 4; if (simRate >= 4 && !shift) nr = 1; }
+            simRate = nr;
+            if (simRate > 4) say("TIME WARP: HOLDING HEADING, SPEED AND CLIMB. TAB / SHIFT+TAB TO CHANGE");
+        }
+        else if (key == SDLK_l) { S.labels = !S.labels; say(S.labels ? "TRAFFIC LABELS ON" : "TRAFFIC LABELS OFF"); }
         else if (key == SDLK_t) { utcHours += shift ? -0.25 : 0.25; }
         else if (key == SDLK_BACKQUOTE) FL.throttle = 0;
         else if (key >= SDLK_1 && key <= SDLK_9 && !showMap) { FL.throttle = (key - SDLK_0) * 0.1f; athr = false; }
         else if (key == SDLK_0) { FL.throttle = 1; athr = false; }
-        else if ((key == SDLK_EQUALS || key == SDLK_KP_PLUS) && showMap) mapZoom = mapZoom < S.imagery_max_zoom ? mapZoom + 1 : mapZoom;
-        else if ((key == SDLK_MINUS || key == SDLK_KP_MINUS) && showMap) mapZoom = mapZoom > 5 ? mapZoom - 1 : mapZoom;
+        else if ((key == SDLK_EQUALS || key == SDLK_KP_PLUS) && showMap) { if (mapZoom < S.imagery_max_zoom) { mapZoom++; mapDX *= 2; mapDY *= 2; } }
+        else if ((key == SDLK_MINUS || key == SDLK_KP_MINUS) && showMap) { if (mapZoom > 2) { mapZoom--; mapDX /= 2; mapDY /= 2; } }
         else if (key == SDLK_r && (FL.crashed || scored)) { if (chalActive >= 0) start_challenge(chalActive); else start_flight(); }
         break;
     }
@@ -1586,6 +1706,8 @@ static void usage(void) {
            "  --wind DIR/KT       e.g. 270/12\n"
            "  --cam N             0 chase 1 pilot 2 tail 3 orbit 4 tower 5 flyby\n"
            "  --view Y,P,Z        camera yaw and pitch in degrees, zoom factor\n"
+           "  --pos LAT,LON[,ALT_M[,HDG]]  start in the air anywhere on Earth (poles included)\n"
+           "  --map [ZOOM]        open the world map (for screenshots)\n"
            "  --offline           procedural world, no downloads\n"
            "  --windowed / --fullscreen, --size WxH, --detail F\n"
            "  --shot FILE         render, wait for scenery, save a screenshot and quit\n"
@@ -1620,6 +1742,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--size") && n) { sscanf(n, "%dx%d", &rc.w, &rc.h); i++; }
         else if (!strcmp(a, "--detail") && n) { S.detail = (float)atof(n); i++; }
         else if (!strcmp(a, "--shot") && n) { shot = n; i++; }
+        else if (!strcmp(a, "--pos") && n) { argPos = sscanf(n, "%lf,%lf,%lf,%f", &posLat, &posLon, &posAlt, &posHdg); i++; }
+        else if (!strcmp(a, "--map")) { showMap = true; if (n && n[0] != '-') { mapZoom = atoi(n); i++; } }
         else if (!strcmp(a, "--frames") && n) { maxFrames = atoi(n); i++; }
         else if (!strcmp(a, "--test-flight")) testFlight = true;
         else if (!strcmp(a, "--throttle") && n) { argThrottle = (float)atof(n); i++; }
@@ -1671,6 +1795,7 @@ int main(int argc, char **argv) {
     terrain_init();
     if (testFlight) { run_flight_test(); return 0; }
     tiles_init();
+    traffic_init(); traffic_enable(S.traffic);
     int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
     rc.w = dw; rc.h = dh;
     RenderCfg r0 = rc;
@@ -1682,12 +1807,14 @@ int main(int argc, char **argv) {
         else if (!stick) stick = SDL_JoystickOpen(i);
     }
 
+    { time_t now = time(NULL); struct tm *g = gmtime(&now); if (g) doy = g->tm_yday + 1; }   /* the real date, so the sun and live traffic agree */
     camMode = CAM_ORBIT;
     SDL_StopTextInput();
     spawn();
     if (argChallenge >= 0 && argChallenge < NCH) start_challenge(argChallenge);
     else if (fly) { chalActive = -1; start_flight(); }
     if (argCam >= 0) camMode = argCam; else if (state == ST_LOADING) camMode = CAM_CHASE;
+    if (argPos >= 2) { if (!fly) { chalActive = -1; start_flight(); } teleport(posLat, posLon, argPos >= 3 ? posAlt : 3000, argPos >= 4 ? posHdg : 0); utcHours = tod - posLon / 15.0; if (camMode == CAM_ORBIT) camMode = CAM_CHASE; }
     if (shot && state == ST_LOADING) { state = ST_FLY; paused = true; freezeShot = true; }
     if (argThrottle >= 0) { FL.throttle = argThrottle; athr = false; FL.ab = FL.def->afterburner > 0 && argThrottle > 0.9f ? (argThrottle - 0.9f) / 0.1f : 0; }
 
@@ -1716,9 +1843,11 @@ int main(int argc, char **argv) {
         }
         if (state == ST_FLY && !paused && !showHelp) {
             flight_controls(dt);
-            float sdt = dt * simRate;
+            if (simRate > 4 && (FL.onGround || FL.agl < 300 || FL.crashed || FL.stall)) { simRate = 1; say("TIME WARP OFF"); }
+            float sdt = dt * simRate, pdt = dt * fminf(simRate, 4);
             FL.wind = wind_at(&FL, simTime);
-            flight_step(&FL, sdt);
+            flight_step(&FL, pdt);
+            if (sdt > pdt) flight_cruise(&FL, sdt - pdt);
             simTime += sdt;
             if (FL.touchdowns > lastTouchdowns) { lastTouchdowns = FL.touchdowns; on_touchdown(); }
             if (ap && (FL.onGround || FL.crashed)) { ap = false; audio_event(3); }
@@ -1730,6 +1859,7 @@ int main(int argc, char **argv) {
             flight_step(&FL, dt);       /* settle on the gear in the menu */
         }
         prevPitch = FL.pitch; prevBank = FL.bank;
+        traffic_update(FL.lat, FL.lon, dt);
         double hours = utcHours + simTime / 3600.0 + FL.lon / 15.0;
         render_set_time(FL.lat, FL.lon, (float)fmod(hours + 48, 24), doy);
         update_camera(dt);
@@ -1743,6 +1873,7 @@ int main(int argc, char **argv) {
         render_frame(&cam, &FL, (state == ST_FLY && paused) ? 0 : dt * (state == ST_FLY ? simRate : 1), camMode != CAM_COCKPIT);
         hud_begin();
         if (state == ST_FLY || state == ST_PAUSE) {
+            if (showHud && !showMap) draw_traffic_labels();
             if (showHud) draw_flight_hud();
             if (showMap) draw_map();
             draw_result();
@@ -1762,7 +1893,8 @@ int main(int argc, char **argv) {
         if (shot) {
             int q, b, ok, fail; tiles_stats(&q, &b, &ok, &fail);
             quietFrames = (q + b == 0) ? quietFrames + 1 : 0;
-            if ((frame > 120 && quietFrames > 45) || frame >= maxFrames) {
+            bool trafficIn = !S.traffic || S.offline || g_ntraffic > 0 || frame > 400;
+            if ((frame > 120 && quietFrames > 45 && trafficIn) || frame >= maxFrames) {
                 render_screenshot(shot);
                 if (getenv("WINGMERE_DEBUG")) { double la, lo, h; ecef_to_geo(cam.pos, &la, &lo, &h); fprintf(stderr, "debug: plane alt %.1f agl %.1f  cam alt %.1f ground %.1f  fov %.2f  fwd %.2f %.2f %.2f\n", FL.alt, FL.agl, h, terrain_height(la, lo, NULL, NULL), cam.fov, cam.fwd.x, cam.fwd.y, cam.fwd.z); }
                 fprintf(stderr, "wingmere: wrote %s after %d frames\n", shot, frame);

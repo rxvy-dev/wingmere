@@ -12,7 +12,7 @@
 #include <string.h>
 #include <strings.h>
 
-#define WM_VERSION "0.2.0"
+#define WM_VERSION "0.3.0"
 #define PI 3.14159265358979f
 #define DEG (PI / 180.0f)
 #define KT 0.514444f     /* metres/second per knot */
@@ -92,6 +92,7 @@ typedef struct {
     bool buildings; float pave;   /* how strongly to paint OSM pavement over the imagery */
     int imagery_max_zoom, elevation_max_zoom, threads, texture_budget;
     float detail; bool offline;
+    char traffic_url[512]; bool traffic, labels;   /* live ADS-B traffic: {lat} {lon} {dist} in the URL */
 } Settings;
 extern Settings S;
 
@@ -176,6 +177,8 @@ typedef struct {
 void flight_reset(Flight *f, const AircraftDef *a, double lat, double lon, double alt, float heading_deg, float speed, bool onGround);
 void flight_step(Flight *f, float dt);
 void flight_auto_trim(Flight *f);   /* set elevator trim for level flight at the current speed */
+void flight_move_to(Flight *f, double lat, double lon, double alt, float turn_deg);   /* carry attitude and velocity to a new place */
+void flight_cruise(Flight *f, float dt);   /* time warp: fly straight along the great circle */
 void flight_trim(Flight *f, float gamma_deg);  /* attitude, trim and throttle for steady flight on a climb/descent angle */
 float flight_stall_speed(const AircraftDef *a, float flaps); /* sea-level 1g stall speed, m/s */
 
@@ -221,5 +224,23 @@ void audio_init(void);
 typedef struct { float rpm, throttle, airspeed, stall, onGround, groundSpeed, gearMoving, master, crash; int engine; /* 0 radial 1 turboprop 2 jet */ } AudioState;
 extern AudioState g_audio;
 void audio_event(int ev); /* 0 click, 1 touchdown, 2 crash, 3 ap off, 4 warning, 5 screams, 6 applause */
+
+
+/* ------------------------------------------------------------------ live air traffic (traffic.c) */
+#define MAX_TRAFFIC 400
+typedef struct {
+    char hex[8], callsign[12], reg[12], type[6];
+    double lat, lon, alt;                       /* drawn position (metres above sea level) */
+    double fixLat, fixLon, fixAlt; float fixT;  /* last report and the time since it */
+    float gs, track, vrate, age, bank, turn, prevTrack;  /* m/s, degrees true, m/s */
+    bool ground, fresh;
+    const char *model; float scale;             /* which of our aircraft stands in for it */
+} Traffic;
+extern Traffic g_traffic[MAX_TRAFFIC];
+extern int g_ntraffic;
+void traffic_init(void);
+void traffic_enable(bool on);
+void traffic_update(double lat, double lon, float dt);
+bool traffic_status(int *count);
 
 #endif

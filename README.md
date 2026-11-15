@@ -18,6 +18,8 @@ Written in C with SDL2 and OpenGL 3.3, for every Linux distro. MIT licence.
 ## What's in it
 
 - **The real planet, streamed.** A quadtree over the whole Earth in WGS84 double precision, with camera-relative rendering so there's no jitter anywhere, logarithmic depth for a 30 cm to 400 km view, and horizon culling. Imagery and elevation download on background threads, get cached in `~/.cache/wingmere`, and fall back to a procedural world when you're offline.
+- **Real planes, where they really are, right now.** Live air traffic from the [adsb.lol](https://adsb.lol) ADS-B network (free, open data, no key): every aircraft within about 80 NM of you appears with its real callsign, registration and type, flown smoothly between reports on its real track, speed and climb rate. Each one gets the closest model in the hangar, sized to the real type (a 737 for an A320, a bigger 737 for a 777 or A380, the turboprop for a Dash 8 or ATR, a fighter for an F-16, a light plane for a Cessna), with nav lights, beacon and strobes. Labels over each aircraft show callsign, type, flight level, speed and distance (L), and they all show up on the map.
+- **Go anywhere, poles included.** The world map (M) pans and zooms out to the whole planet: click anywhere to teleport there. Time warp goes up to ×64 in cruise (Tab), so an ocean crossing takes minutes. The Arctic is sea ice you can land on, Antarctica is a 2,900 m ice plateau, and the dateline and both poles fly straight through. *Fly from another airport* in the pause menu jumps to any of the 9,313 airports. The sun follows today's real date.
 - **Every real airport.** 9,313 airports and 12,530 runways from OurAirports. Runways get centrelines, piano keys, aiming points, touchdown-zone bars and their real designators (28R, 09L…), the terrain under them is levelled, and at night the edge, threshold and approach lights come on, including a sequenced-strobe "rabbit". A PAPI shows white/red against your real glide angle.
 - **Real map data for the whole world.** OpenStreetMap vector tiles (OpenFreeMap, no key needed) give exact coastlines, lakes and rivers (also used by the physics, so low land is not "sea"), extruded 3D buildings with facades, glass towers and lit windows at night, painted aprons and taxiways with yellow centrelines and green centreline lights, and street lights along every road at night.
 - **Airports that look lived in:** buildings on the edge of an apron become glass-fronted terminals and hangars, and airliners in assorted liveries park at the stands.
@@ -72,7 +74,10 @@ It needs a GPU with OpenGL 3.3. Scenery downloads the first time you fly over a 
 | C, F2–F7 | cameras: chase, pilot, tail, orbit, tower, flyby |
 | right mouse drag, wheel | look / orbit, zoom |
 | M | map (+/- zoom) |
-| P, Tab | pause, sim rate ×1/×2/×4 |
+| P | pause |
+| Tab, Shift+Tab | sim rate ×2 and ×4 (full physics), then time warp ×8 to ×64 in cruise (300 m above the ground or more) |
+| L | live traffic labels on / off |
+| M | world map: wheel or +/- to zoom, drag to pan, **click to teleport** |
 | T / Shift+T | time of day ±15 min |
 | H, F3, F1 | hide HUD, FPS counter, controls help |
 | F12 | screenshot to ~/Pictures |
@@ -90,6 +95,7 @@ It needs a GPU with OpenGL 3.3. Scenery downloads the first time you fly over a 
 wingmere --airport LOWI --runway 26 --aircraft b737 --start approach --time 17.5 --weather 2 --wind 260/12 --fly
 wingmere --challenge 1          # Maho Beach
 wingmere --offline              # procedural world, no downloads
+wingmere --aircraft b737 --pos -87.5,20,3600,180   # in the air anywhere: lat,lon,altitude m,heading
 wingmere --help                 # everything else
 ```
 
@@ -110,9 +116,14 @@ vector_tilejson = https://tiles.openfreemap.org/planet
 buildings = 1
 assist = 1                   # flight assists
 guide = 1                    # 3D approach gates
+traffic = 1                  # live air traffic (also in SETTINGS)
+traffic_labels = 1
+traffic_url = https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist}
 ```
 
-Sources are URL templates (`{z}`, `{x}`, `{y}`), so you can point them at any Web-Mercator XYZ server you're allowed to use: imagery as JPEG/PNG, elevation in Terrarium encoding, and map data as OpenMapTiles-schema vector tiles via a TileJSON. `tools/fake_tile_server.py` serves an invented landscape, town and airport locally, for testing.
+Live traffic is polled every 8 seconds from a free community service, so please keep it that way. Any server that answers in the same ADSBExchange-v2 JSON format (an `ac` list with `hex`, `flight`, `r`, `t`, `lat`, `lon`, `alt_baro`, `gs`, `track`, `baro_rate`) works, including your own `readsb` or `tar1090` receiver at home. adsb.lol says a feeder-issued API key may be needed in future; if the feed ever goes quiet, point `traffic_url` at another source.
+
+Sources are URL templates (`{z}`, `{x}`, `{y}`), so you can point them at any Web-Mercator XYZ server you're allowed to use: imagery as JPEG/PNG, elevation in Terrarium encoding, and map data as OpenMapTiles-schema vector tiles via a TileJSON. `tools/fake_tile_server.py` serves an invented landscape, town and airport locally (plus a fake traffic feed at `/v2/...`), for testing.
 
 ## Adding aircraft
 
@@ -143,6 +154,7 @@ The code is MIT, © 2026 rxvy. The data and models have their own licences, and 
 - **Imagery (USGS option):** USGS National Map, public domain.
 - **Imagery (open option):** [Sentinel-2 cloudless 2016](https://s2maps.eu) by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016 & 2017), CC BY 4.0. The EOX tile service is free for non-commercial use with attribution. Wingmere is free and non-commercial.
 - **Elevation:** [Terrain Tiles on AWS](https://registry.opendata.aws/terrain-tiles/) (Mapzen), built from SRTM, GMTED2010, ETOPO1, NED, Canada CDEM, EU-DEM, Australia DEM, Mexico INEGI, Kartverket, LINZ and others. See their attribution page.
+- **Live air traffic:** [adsb.lol](https://adsb.lol), data © adsb.lol contributors and feeders, [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1.0/). Positions are shown live and not stored.
 - **Airports and runways:** [OurAirports](https://ourairports.com/data/), public domain.
 - **Aircraft models**, all CC BY 4.0. *Fill in the authors before publishing:*
   - Yellow Biplane: AUTHOR (link)

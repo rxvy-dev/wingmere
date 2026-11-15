@@ -24,7 +24,7 @@ find_package(Threads REQUIRED)
 
 add_executable(wingmere
   src/main.c src/geo.c src/tiles.c src/airport.c src/terrain.c
-  src/aircraft.c src/flight.c src/render.c src/hud.c src/audio.c src/mvt.c)
+  src/aircraft.c src/flight.c src/render.c src/hud.c src/audio.c src/mvt.c src/traffic.c)
 target_compile_definitions(wingmere PRIVATE _GNU_SOURCE WINGMERE_DATADIR="${CMAKE_INSTALL_PREFIX}/share/wingmere/data")
 target_include_directories(wingmere PRIVATE ${SDL2_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS} ${CMAKE_BINARY_DIR} src)
 target_link_directories(wingmere PRIVATE ${SDL2_LIBRARY_DIRS} ${CURL_LIBRARY_DIRS})

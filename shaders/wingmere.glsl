@@ -91,7 +91,7 @@ in vec3 vRel, vN;
 in vec2 vUV, vMUV, vEUV;
 in float vH, vW;
 uniform sampler2D uImg, uDetail, uMask, uElev;
-uniform float uHasImg, uHasMask, uPave, uHasElev, uElevTexelM;
+uniform float uHasImg, uHasMask, uPave, uHasElev, uElevTexelM, uIce;
 uniform vec3 uCamMod;
 out vec4 fragColor;
 void main() {
@@ -115,6 +115,13 @@ void main() {
         alb = mix(vec3(0.10, 0.16, 0.07), vec3(0.32, 0.29, 0.24), smoothstep(200.0, 2200.0, vH));
         alb = mix(alb, vec3(0.8), smoothstep(2800.0, 3600.0, vH));
         if (vH < 0.3) alb = vec3(0.02, 0.05, 0.09);
+    }
+    if (uIce > 0.5) {
+        // the polar caps: pack ice with pressure ridges in the Arctic, wind-scoured snow on the Antarctic plateau
+        vec3 wq = vRel + uCamMod;
+        float r = texture(uDetail, wq.xy / 4000.0).r * 0.6 + texture(uDetail, wq.yz / 900.0).r * 0.4;
+        alb = uIce < 1.5 ? mix(vec3(0.62, 0.7, 0.78), vec3(0.86, 0.9, 0.94), smoothstep(0.35, 0.6, r))
+                         : mix(vec3(0.78, 0.82, 0.88), vec3(0.93, 0.95, 0.97), r);
     }
     // break up the softness of 10 m satellite pixels when close
     vec3 wp = vRel + uCamMod;
@@ -143,6 +150,7 @@ void main() {
         float lake = step(alb.r * 1.15, alb.b) * step(lum, 0.06) * step(0.97, dot(N, upL));
         water = max(step(vH, 0.3), lake * 0.85);
     }
+    if (uIce > 0.5) water = 0.0;
     vec3 L = uSunDir, Vv = -vRel / max(dist, 1e-3);
     float ndl = max(dot(N, L), 0.0), fdl = max(dot(upL, L), 0.0);
     float relief = clamp((ndl + 0.04) / (fdl + 0.04), 0.25, 1.9);   // imagery already holds the flat-ground shading

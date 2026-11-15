@@ -577,6 +577,7 @@ void terrain_update(d3 cam, const float fr[6][4], float tanHalfFov, int screenH)
     }
 }
 
+static void caps_draw(GLuint prog, d3 cam);
 void terrain_draw(GLuint prog, d3 cam) {
     GLint uOff = glGetUniformLocation(prog, "uOffset"), uST = glGetUniformLocation(prog, "uImgST"), uHas = glGetUniformLocation(prog, "uHasImg");
     GLint uMST = glGetUniformLocation(prog, "uMaskST"), uHM = glGetUniformLocation(prog, "uHasMask");
@@ -619,9 +620,10 @@ void terrain_draw(GLuint prog, d3 cam) {
         glBindVertexArray(m->vao);
         glDrawElements(GL_TRIANGLES, nIdx, GL_UNSIGNED_SHORT, 0);
     }
+    caps_draw(prog, cam);
 }
 
-float terrain_height(double lat, double lon, bool *water, bool *runway) {
+static float height_merc(double lat, double lon, bool *water, bool *runway) {
     double X = merc_x(lon, elevMax), Y = merc_y(lat, elevMax);
     int x = (int)X, y = (int)Y;
     float h = 0;
@@ -643,6 +645,84 @@ float terrain_height(double lat, double lon, bool *water, bool *runway) {
     if (water) *water = !on && (wet >= 0 ? wet > 0.5f : h <= 0.05f);
     return h;
 }
+/* Beyond 85.05 degrees the Web Mercator tiles stop.  The rest of the way to each pole is filled in:
+ * flat sea ice to the north (you can land on it), and the Antarctic plateau rising to ~2900 m in the south. */
+#define MERC_EDGE 85.0511
+static float polar_height(double lat, double lon) {
+    double a = fabs(lat);
+    float edge = height_merc(lat > 0 ? MERC_EDGE - 0.02 : -(MERC_EDGE - 0.02), lon, NULL, NULL);
+    float cap = lat > 0 ? 0.0f : 2900.0f;
+    float k = (float)smooth(MERC_EDGE, MERC_EDGE + 2.0, a);
+    float h = edge + (cap - edge) * k;
+    if (lat < 0) h += 120.0f * k * (float)(sin(lon * 0.11) * cos(a * 1.7));   /* a little relief on the ice sheet */
+    return h;
+}
+float terrain_height(double lat, double lon, bool *water, bool *runway) {
+    if (fabs(lat) <= MERC_EDGE) return height_merc(lat, lon, water, runway);
+    if (water) *water = false;
+    if (runway) *runway = false;
+    return polar_height(lat, lon);
+}
+/* the two polar caps: one mesh each, rebuilt now and then as the tiles at their edges sharpen */
+enum { CAP_R = 64, CAP_A = 256 };
+static struct { GLuint vao, vbo, ibo; int nidx; d3 center; int built; } capm[2];
+static void cap_build(int k) {
+    double sgn = k == 0 ? 1 : -1;
+    d3 c = geo_to_ecef(90 * sgn, 0, polar_height(90 * sgn, 0));
+    int nv = (CAP_R + 1) * (CAP_A + 1);
+    float *v = malloc(sizeof(float) * 9 * nv);
+    for (int r = 0; r <= CAP_R; r++)
+        for (int a = 0; a <= CAP_A; a++) {
+            double t = (double)r / CAP_R, lat = sgn * (90 - (90 - (MERC_EDGE - 0.01)) * t), lon = -180 + 360.0 * a / CAP_A;
+            float h = polar_height(lat, lon);
+            d3 p = geo_to_ecef(lat, lon, h);
+            v3 e, n, u; enu_basis(lat, lon, &e, &n, &u);
+            v3 rel = d2f(dsub(p, c));
+            float *o = &v[((size_t)r * (CAP_A + 1) + a) * 9];
+            o[0] = rel.x; o[1] = rel.y; o[2] = rel.z; o[3] = u.x; o[4] = u.y; o[5] = u.z; o[6] = (float)t; o[7] = (float)a / CAP_A; o[8] = h;
+        }
+    int ni = CAP_R * CAP_A * 6;
+    uint32_t *ix = malloc(sizeof(uint32_t) * ni), *q = ix;
+    for (int r = 0; r < CAP_R; r++)
+        for (int a = 0; a < CAP_A; a++) {
+            uint32_t i0 = r * (CAP_A + 1) + a, i1 = i0 + 1, i2 = i0 + CAP_A + 1, i3 = i2 + 1;
+            if (k == 0) { *q++ = i0; *q++ = i2; *q++ = i1; *q++ = i1; *q++ = i2; *q++ = i3; }
+            else { *q++ = i0; *q++ = i1; *q++ = i2; *q++ = i1; *q++ = i3; *q++ = i2; }
+        }
+    if (!capm[k].vao) {
+        glGenVertexArrays(1, &capm[k].vao); glGenBuffers(1, &capm[k].vbo); glGenBuffers(1, &capm[k].ibo);
+        glBindVertexArray(capm[k].vao); glBindBuffer(GL_ARRAY_BUFFER, capm[k].vbo);
+        glEnableVertexAttribArray(0); glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 36, (void *)0);
+        glEnableVertexAttribArray(1); glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 36, (void *)12);
+        glEnableVertexAttribArray(2); glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 36, (void *)24);
+        glEnableVertexAttribArray(3); glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, 36, (void *)32);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, capm[k].ibo);
+    }
+    glBindVertexArray(capm[k].vao);
+    glBindBuffer(GL_ARRAY_BUFFER, capm[k].vbo); glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 9 * nv, v, GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, capm[k].ibo); glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(uint32_t) * ni, ix, GL_STATIC_DRAW);
+    glBindVertexArray(0);
+    capm[k].nidx = ni; capm[k].center = c; capm[k].built = frameNo;
+    free(v); free(ix);
+}
+static void caps_draw(GLuint prog, d3 cam) {
+    double lat, lon, h; ecef_to_geo(cam, &lat, &lon, &h);
+    GLint uIce = glGetUniformLocation(prog, "uIce");
+    for (int k = 0; k < 2; k++) {
+        double near = k == 0 ? lat : -lat;
+        if (near < 62 && h < 400000) continue;   /* only when the cap could be in view */
+        if (!capm[k].vao || (frameNo - capm[k].built > 300 && near > 70)) cap_build(k);
+        v3 off = d2f(dsub(capm[k].center, cam));
+        glUniform3f(glGetUniformLocation(prog, "uOffset"), off.x, off.y, off.z);
+        glUniform4f(glGetUniformLocation(prog, "uImgST"), 1, 1, 0, 0);
+        glUniform1f(glGetUniformLocation(prog, "uHasImg"), 0); glUniform1f(glGetUniformLocation(prog, "uHasMask"), 0); glUniform1f(glGetUniformLocation(prog, "uHasElev"), 0);
+        glUniform1f(uIce, k == 0 ? 1.0f : 2.0f);
+        glBindVertexArray(capm[k].vao);
+        glDrawElements(GL_TRIANGLES, capm[k].nidx, GL_UNSIGNED_INT, 0);
+    }
+    glUniform1f(uIce, 0);
+}
+
 bool terrain_ready(double lat, double lon) {
     int z = elevMax - 3 > 0 ? elevMax - 3 : 0;
     double X = merc_x(lon, z), Y = merc_y(lat, z);

@@ -20,5 +20,6 @@ Imagery: Sentinel-2 cloudless 2016 - https://s2maps.eu by EOX IT Services GmbH
 Elevation: Terrain Tiles on AWS (Mapzen) - SRTM, GMTED2010, ETOPO1, NED, Canada CDEM,
 EU-DEM, Australia DEM, Mexico INEGI, Kartverket, LINZ and others
 Airports and runways: OurAirports (public domain)
+Live air traffic: adsb.lol - data (c) adsb.lol contributors and feeders, ODbL 1.0
 =CODE
 SDL2, OpenGL, libcurl, stb_image and stb_image_write by Sean Barrett, ufbx by Samuli Raivio

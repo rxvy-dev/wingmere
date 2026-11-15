@@ -10,7 +10,7 @@ formats as the real servers: Terrarium-encoded PNG elevation and JPEG imagery.
     elevation_url = http://127.0.0.1:8765/elev/{z}/{x}/{y}.png
     vector_tilejson = http://127.0.0.1:8765/planet
 """
-import io
+import io, time
 import math
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -130,11 +130,50 @@ def vector_tile(z, x, y):
     return mapbox_vector_tile.encode(layers, default_options={'y_coord_down': True, 'quantize_bounds': None})
 
 
+
+T0 = time.time()
+# (hex, callsign, reg, type, east m, north m, alt ft or 'ground', kt, track, ft/min) relative to where the game asks
+FAKE_TRAFFIC = [
+    ('a1b2c3', 'UAL1234 ', 'N12345', 'B738', 260, -100, 260, 5, 100, 0),
+    ('a1b2c4', 'BAW285  ', 'G-XLEA', 'A388', 2000, 3200, 5200, 210, 280, -900),
+    ('a1b2c5', 'ASA331  ', 'N623VA', 'A320', 95, 30, 'ground', 0, 280, 0),
+    ('a1b2c6', 'SKW5521 ', 'N601SK', 'E75L', -900, 2500, 3400, 180, 60, 1500),
+    ('a1b2c7', 'N172SP  ', 'N172SP', 'C172', 800, 1500, 1400, 95, 200, 0),
+    ('a1b2c8', 'VIPER11 ', '', 'F16', -4000, -2500, 9000, 420, 45, 0),
+    ('a1b2c9', 'QXE2014 ', 'N401QX', 'DH8D', 3000, -2000, 4100, 230, 300, 600),
+    ('a1b2ca', 'LIFE1   ', 'N911LF', 'EC35', 500, 3500, 900, 110, 150, 0),
+    ('a1b2cb', 'DAL88   ', 'N801DN', 'B77W', -6000, 6000, 11000, 300, 135, 1800),
+    ('a1b2cc', '', 'N5512', '', 9000, -4000, 3500, 120, 0, 0),
+]
+ANCHOR = []
+def fake_traffic(lat, lon):
+    if not ANCHOR: ANCHOR.append((lat, lon))   # the traffic stays where it first appeared
+    lat, lon = ANCHOR[0]
+    t = time.time() - T0
+    ac = []
+    for hx, cs, reg, ty, e, n, alt, kt, trk, vr in FAKE_TRAFFIC:
+        v = kt * 0.514444
+        e += math.sin(math.radians(trk)) * v * t
+        n += math.cos(math.radians(trk)) * v * t
+        a = {'hex': hx, 'type': 'adsb_icao', 'flight': cs, 'r': reg, 't': ty,
+             'lat': lat + n / 111320.0, 'lon': lon + e / (111320.0 * math.cos(math.radians(lat))),
+             'gs': kt, 'track': trk, 'baro_rate': vr, 'category': 'A3', 'seen': 0.4}
+        a['alt_baro'] = alt if alt == 'ground' else round(alt + vr * t / 60.0)
+        if not cs: del a['flight']
+        if not ty: del a['t']
+        ac.append(a)
+    return {'ac': ac, 'msg': 'No error', 'now': int(time.time() * 1000), 'total': len(ac)}
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             parts = self.path.strip('/').split('/')
             kind = parts[0]
+            if kind == 'v2':   # an adsb.lol style /v2/lat/{lat}/lon/{lon}/dist/{nm}
+                q = dict(zip(parts[1::2], parts[2::2]))
+                body = json.dumps(fake_traffic(float(q['lat']), float(q['lon']))).encode()
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)
+                return
             if kind == 'planet' and mapbox_vector_tile:
                 body = json.dumps({'tiles': ['http://127.0.0.1:%d/vec/{z}/{x}/{y}.pbf' % self.server.server_port], 'maxzoom': 14}).encode()
                 self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)

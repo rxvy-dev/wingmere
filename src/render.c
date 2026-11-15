@@ -454,6 +454,54 @@ static void draw_parked(const Camera *cam, float t) {
     }
     glUniform4f(U(pPlane, "uPaint"), 0, 0, 0, 0);
 }
+
+/* live traffic: real aircraft, drawn with the nearest model we have, with their lights on */
+static void draw_traffic(const Camera *cam, float t) {
+    if (!g_ntraffic) return;
+    static const float LIV[6][4] = {{1, 1, 1, 0}, {0.92f, 0.93f, 0.95f, 0.7f}, {0.1f, 0.25f, 0.65f, 0.55f}, {0.7f, 0.06f, 0.05f, 0.5f}, {0.08f, 0.08f, 0.1f, 0.6f}, {0.95f, 0.55f, 0.1f, 0.5f}};
+    bool night = render_light_level() < 0.6f;
+    for (int i = 0; i < g_ntraffic; i++) {
+        Traffic *tr = &g_traffic[i];
+        d3 p = geo_to_ecef(tr->lat, tr->lon, tr->alt);
+        v3 rel = d2f(dsub(p, cam->pos));
+        float d = vlen(rel);
+        if (d > 90000) continue;
+        v3 e, n, u; enu_basis(tr->lat, tr->lon, &e, &n, &u);
+        float hd = tr->prevTrack * DEG;
+        v3 f = vadd(vmul(n, cosf(hd)), vmul(e, sinf(hd)));
+        float climb = tr->gs > 30 && !tr->ground ? clampf(atan2f(tr->vrate, tr->gs), -0.2f, 0.25f) + 0.04f : 0;
+        f = vnorm(vadd(vmul(f, cosf(climb)), vmul(u, sinf(climb))));
+        v3 rt = vnorm(vcross(f, u));
+        v3 up = vnorm(vcross(rt, f));
+        float bk = tr->bank * DEG;
+        up = vnorm(vadd(vmul(up, cosf(bk)), vmul(rt, sinf(bk))));
+        uint32_t h = 2166136261u; for (const char *c = tr->hex; *c; c++) h = (h ^ (uint8_t)*c) * 16777619u;
+        const AircraftDef *a = NULL;
+        if (tr->model) for (int k = 0; k < g_naircraft; k++) if (!strcmp(g_aircraft[k].id, tr->model)) { a = &g_aircraft[k]; break; }
+        float sc = tr->scale > 0 ? tr->scale : 1;
+        if (a && d < 30000) {
+            float lift = tr->ground ? (-fminf(fminf(a->gear[0].y, a->gear[1].y), a->gear[2].y) - 0.05f) * sc : 0;
+            v3 pr = vadd(rel, vmul(u, lift));
+            float agl = (float)(tr->alt - terrain_height(tr->lat, tr->lon, NULL, NULL));
+            float gear = tr->ground || (agl < 900 && tr->vrate < 2) ? 1.0f : 0.0f;
+            const float *lv = LIV[(h >> 3) % 6];
+            glUniform4f(U(pPlane, "uPaint"), lv[0], lv[1], lv[2], lv[3]);
+            aircraft_draw(pPlane, a, m4_trs(pr, q_look(f, up), sc), t * 40 + (float)i, gear, false);
+        }
+        /* nav lights, beacon and strobes, so you can spot them from far away, day or night */
+        if (!a || night || d > 2500) {
+            float span = (a ? a->span : 30) * sc * 0.5f;
+            d3 L = dadd(p, f2d(vmul(rt, -span))), R = dadd(p, f2d(vmul(rt, span)));
+            float base = night ? 1.0f : 0.35f;
+            fx_light(L, 0.5f, 1.0f, 0.12f, 0.08f, base * 2.2f);
+            fx_light(R, 0.5f, 0.1f, 1.0f, 0.3f, base * 2.2f);
+            float ph = fmodf(t + (h % 997) * 0.01f, 1.2f);
+            if (ph < 0.08f) fx_light(p, 0.7f, 1.0f, 0.15f, 0.1f, base * 4);
+            if (!tr->ground && fmodf(t * 1.0f + (h % 113) * 0.01f, 1.0f) < 0.05f) { fx_light(L, 0.8f, 1, 1, 1, base * 7); fx_light(R, 0.8f, 1, 1, 1, base * 7); }
+        }
+    }
+    glUniform4f(U(pPlane, "uPaint"), 0, 0, 0, 0);
+}
 static const Flight *flameFl; static m4 flameModel;
 static void draw_flames(float t) {
     const Flight *fl = flameFl;
@@ -901,6 +949,13 @@ void render_frame(const Camera *cam, const Flight *fl, float dt, bool drawAircra
         glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         glUniform3f(U(pPlane, "uFinish"), 0, 0, 0);
         draw_parked(cam, t);
+    }
+    if (g_ntraffic) {
+        glUseProgram(pPlane); set_common(pPlane, camPosF, alt, sunDir, sunCol);
+        ui(pPlane, "uTexColor", 4); ui(pPlane, "uTexNormal", 5); ui(pPlane, "uTexRough", 6);
+        glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        glUniform3f(U(pPlane, "uFinish"), 0, 0, 0);
+        draw_traffic(cam, t);
     }
     /* smoke, contrails and lights */
     partN = 0;
