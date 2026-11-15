@@ -12,7 +12,7 @@
 #include <string.h>
 #include <strings.h>
 
-#define WM_VERSION "0.1.0"
+#define WM_VERSION "0.2.0"
 #define PI 3.14159265358979f
 #define DEG (PI / 180.0f)
 #define KT 0.514444f     /* metres/second per knot */
@@ -88,16 +88,21 @@ double merc_lat(double y, int z);
 
 /* ------------------------------------------------------------------ settings (main.c) */
 typedef struct {
-    char imagery_url[512], elevation_url[512], cache_dir[512], user_agent[128];
+    char imagery_url[512], elevation_url[512], cache_dir[512], user_agent[128], vector_tilejson[512], vector_url[512];
+    bool buildings; float pave;   /* how strongly to paint OSM pavement over the imagery */
     int imagery_max_zoom, elevation_max_zoom, threads, texture_budget;
     float detail; bool offline;
 } Settings;
 extern Settings S;
 
 /* ------------------------------------------------------------------ tile downloads (tiles.c) */
-enum { LAYER_ELEV = 0, LAYER_IMG = 1 };
+enum { LAYER_ELEV = 0, LAYER_IMG = 1, LAYER_VEC = 2 };
+/* a decoded OpenStreetMap vector tile (mvt.c) */
+typedef struct { int n; uint8_t *mask; uint8_t *water; int nw; float *bv; int nbv; float *bc; int nb; float *lights; int nl; } VecTile;
+VecTile *mvt_decode(const uint8_t *data, size_t len, int z, int x, int y);
+void vectile_free(VecTile *v);
 enum { TILE_OK = 1, TILE_MISSING = 2, TILE_FAILED = 3 };
-typedef struct { int layer, z, x, y, status, w, h; unsigned char *rgba; float *height; } TileData;
+typedef struct { int layer, z, x, y, status, w, h; unsigned char *rgba; float *height; VecTile *vec; } TileData;
 void tiles_init(void);
 void tiles_request(int layer, int z, int x, int y, float priority);
 int  tiles_poll(TileData *out, int max);   /* finished tiles; caller frees rgba/height */
@@ -125,9 +130,11 @@ float terrain_height(double lat, double lon, bool *water, bool *runway);
 void  terrain_stats(int *drawn, int *meshes, int *textures, int *elev);
 bool  terrain_ready(double lat, double lon);
 void  terrain_draw_map(GLuint prog, double lat, double lon, int zoom, float w, float h); /* 2D map overlay */
+void  terrain_draw_city(GLuint prog, d3 cam, float maxDist, int what);   /* what: 0 buildings, 1 taxiway paint */
+void  terrain_lights(d3 cam, float night);
 
 /* ------------------------------------------------------------------ aircraft + flight (aircraft.c, flight.c) */
-#define MAX_PARTS 64
+#define MAX_PARTS 160
 typedef struct {
     char id[32], name[64], kind[96], sound[16];
     float mass, wing_area, chord, span, length, height;
@@ -138,11 +145,15 @@ typedef struct {
     v3 gear[3];
     /* model */
     int nparts; struct { GLuint vao, vbo, ibo; int nidx, mat, kind; v3 pivot; } part[MAX_PARTS];
-    int nmats; struct { float rgba[4], metal, rough; int glass; GLuint tex[3]; } mat[32];
+    int nmats; struct { float rgba[4], metal, rough; int glass; GLuint tex[3]; } mat[64];
     v3 bmin, bmax, tipL, tipR, tail;   /* bounding box, wingtips (+x is left), top of the fin */
     int nengines; v3 engine[4];        /* propeller hubs / fan faces */
+    float afterburner;                 /* total thrust with reheat, N (0 = none) */
+    int nnozzle; v3 nozzle[4]; float nozzleR[4];
+    int npilot; v3 pilot[4];           /* crew heads you can see in the cockpit */
+    int pax;                           /* passenger seats */
 } AircraftDef;
-extern AircraftDef g_aircraft[8]; extern int g_naircraft;
+extern AircraftDef g_aircraft[16]; extern int g_naircraft;
 void aircraft_load_all(const char *dir);
 void aircraft_draw(GLuint prog, const AircraftDef *a, m4 model, float propAngle, float gearDown, bool shadowPass);
 
@@ -152,7 +163,7 @@ typedef struct {
     v3 wind;                                        /* air mass velocity, world frame */
     float elev, ail, rud, throttle, trim, brake;    /* controls: -1..1, throttle 0..1 */
     int flapsSet; float flaps, gearDown, gearCmd;   /* flaps 0..1 (animated), gear 0 up .. 1 down */
-    float propAngle, rpm;
+    float propAngle, rpm, ab;                       /* ab: afterburner 0..1 */
     /* outputs */
     double lat, lon, alt; float agl, ias, gs, vs, heading, pitch, bank, aoa, gload, slip;
     bool onGround, stall, crashed; char crashWhy[48];
@@ -181,6 +192,9 @@ bool world_to_screen(d3 p, const Camera *cam, float *sx, float *sy);
 void fx_emit(d3 pos, v3 vel, float size, float grow, float life, float r, float g, float b, float a);
 void fx_light(d3 pos, float size, float r, float g, float b, float intensity);   /* lasts one frame */
 void fx_clear(void);
+/* how the player has customised the aircraft (hangar) */
+typedef struct { float paint[3], amount; int finish; float smokeCol[3]; bool smokeOn; } Look;
+extern Look g_look;
 void render_set_time(double lat, double lon, float hours_local_solar, int day_of_year);
 v3   render_sun_dir(void);
 extern int g_w, g_h;
@@ -204,6 +218,6 @@ void hud_clip_off(void);
 void audio_init(void);
 typedef struct { float rpm, throttle, airspeed, stall, onGround, groundSpeed, gearMoving, master, crash; int engine; /* 0 radial 1 turboprop 2 jet */ } AudioState;
 extern AudioState g_audio;
-void audio_event(int ev); /* 0 click, 1 touchdown, 2 crash, 3 ap off, 4 warning */
+void audio_event(int ev); /* 0 click, 1 touchdown, 2 crash, 3 ap off, 4 warning, 5 screams, 6 applause */
 
 #endif

@@ -4,7 +4,7 @@
 #include <dirent.h>
 #include "../third_party/stb_image.h"
 
-AircraftDef g_aircraft[8];
+AircraftDef g_aircraft[16];
 int g_naircraft;
 
 static GLuint load_texture(const char *dir, const char *name, bool srgb) {
@@ -47,9 +47,12 @@ static void parse_cfg(AircraftDef *a, const char *path) {
         else if (!strcmp(k, "sound")) snprintf(a->sound, sizeof a->sound, "%s", v);
         else if (!strcmp(k, "engine")) a->jet = !strcmp(v, "jet");
         else if (!strncmp(k, "gear", 4) && k[4] >= '0' && k[4] <= '2') { int i = k[4] - '0'; sscanf(v, "%f %f %f", &a->gear[i].x, &a->gear[i].y, &a->gear[i].z); }
+        else if (!strncmp(k, "nozzle", 6) && k[6] >= '0' && k[6] <= '3') { int i = k[6] - '0'; sscanf(v, "%f %f %f %f", &a->nozzle[i].x, &a->nozzle[i].y, &a->nozzle[i].z, &a->nozzleR[i]); if (i + 1 > a->nnozzle) a->nnozzle = i + 1; }
+        else if (!strncmp(k, "pilot", 5) && k[5] >= '0' && k[5] <= '3') { int i = k[5] - '0'; sscanf(v, "%f %f %f", &a->pilot[i].x, &a->pilot[i].y, &a->pilot[i].z); if (i + 1 > a->npilot) a->npilot = i + 1; }
         F(mass) F(wing_area) F(chord) F(span) F(length) F(height) F(cl0) F(cla) F(alpha_stall) F(clmax) F(cd0) F(k) F(thrust) F(prop_v)
         F(flap_cl) F(flap_cd) F(gear_cd) F(cm_alpha) F(cm_de) F(cm_q) F(cl_da) F(cl_p) F(cl_beta) F(cn_beta) F(cn_dr) F(cn_r)
-        F(ixx) F(iyy) F(izz) F(v_rotate) F(v_cruise) F(vne) F(cam_dist)
+        F(ixx) F(iyy) F(izz) F(v_rotate) F(v_cruise) F(vne) F(cam_dist) F(afterburner)
+        I(pax)
         I(flaps) I(retract) I(tricycle)
 #undef F
 #undef I
@@ -70,13 +73,13 @@ static bool load_model(AircraftDef *a, const char *dir) {
     size_t off = 20;
 #define RD(T) (*(T *)(b + (off += sizeof(T)) - sizeof(T)))
     int nm = RD(uint32_t);
-    a->nmats = nm < 32 ? nm : 32;
+    a->nmats = nm < 64 ? nm : 64;
     for (int i = 0; i < nm; i++) {
         off += 48;
         float rgba[4]; memcpy(rgba, b + off, 16); off += 16;
         float metal = RD(float), rough = RD(float); uint32_t flags = RD(uint32_t);
         char tex[3][48]; memcpy(tex, b + off, 144); off += 144;
-        if (i >= 32) continue;
+        if (i >= 64) continue;
         memcpy(a->mat[i].rgba, rgba, 16); a->mat[i].metal = metal; a->mat[i].rough = rough; a->mat[i].glass = flags & 1;
         a->mat[i].tex[0] = load_texture(dir, tex[0], true);
         a->mat[i].tex[1] = load_texture(dir, tex[1], false);
@@ -131,7 +134,7 @@ void aircraft_load_all(const char *root) {
     DIR *d = opendir(root);
     if (!d) { fprintf(stderr, "wingmere: no aircraft folder at %s\n", root); return; }
     struct dirent *e;
-    while ((e = readdir(d)) && g_naircraft < 8) {
+    while ((e = readdir(d)) && g_naircraft < 16) {
         if (e->d_name[0] == '.') continue;
         char dir[1024], cfg[1100];
         snprintf(dir, sizeof dir, "%s/%s", root, e->d_name);
@@ -154,6 +157,7 @@ void aircraft_load_all(const char *root) {
 void aircraft_draw(GLuint prog, const AircraftDef *a, m4 model, float propAngle, float gearDown, bool shadowPass) {
     GLint uModel = glGetUniformLocation(prog, "uModel");
     GLint uCol = glGetUniformLocation(prog, "uColor"), uMat = glGetUniformLocation(prog, "uMatParams"), uHas = glGetUniformLocation(prog, "uHasTex");
+    GLint uPM = glGetUniformLocation(prog, "uPaintMask");
     for (int pass = 0; pass < 2; pass++) {          /* opaque first, glass second */
         if (shadowPass && pass) break;
         for (int i = 0; i < a->nparts; i++) {
@@ -173,6 +177,7 @@ void aircraft_draw(GLuint prog, const AircraftDef *a, m4 model, float propAngle,
             if (!shadowPass) {
                 glUniform4fv(uCol, 1, mt->rgba);
                 glUniform3f(uMat, mt->metal, mt->rough, (float)mt->glass);
+                glUniform1f(uPM, p->kind == 0 ? 1.0f : 0.0f);
                 glUniform3f(uHas, mt->tex[0] ? 1.0f : 0.0f, mt->tex[1] ? 1.0f : 0.0f, mt->tex[2] ? 1.0f : 0.0f);
                 for (int t = 0; t < 3; t++) { glActiveTexture(GL_TEXTURE4 + t); glBindTexture(GL_TEXTURE_2D, mt->tex[t]); }
             }

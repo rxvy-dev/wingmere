@@ -20,12 +20,12 @@ ROOT=""; [ "$(id -u)" -ne 0 ] && ROOT="sudo"
 
 if [ "$DEPS" = 1 ]; then
   echo "==> Installing build dependencies (C compiler, CMake, SDL2, OpenGL headers, libcurl)"
-  if   have apt-get; then $ROOT apt-get update && $ROOT apt-get install -y build-essential cmake pkg-config libsdl2-dev libgl-dev libcurl4-openssl-dev
-  elif have dnf;     then $ROOT dnf install -y gcc cmake pkgconf-pkg-config SDL2-devel mesa-libGL-devel libcurl-devel
+  if   have apt-get; then $ROOT apt-get update && $ROOT apt-get install -y build-essential cmake pkg-config libsdl2-dev libgl-dev libcurl4-openssl-dev zlib1g-dev
+  elif have dnf;     then $ROOT dnf install -y gcc cmake pkgconf-pkg-config SDL2-devel mesa-libGL-devel libcurl-devel zlib-devel
   elif have pacman;  then $ROOT pacman -S --needed --noconfirm base-devel cmake sdl2 mesa curl
   elif have xbps-install; then $ROOT xbps-install -Sy gcc make cmake pkg-config SDL2-devel MesaLib-devel libcurl-devel
   elif have zypper;  then $ROOT zypper --non-interactive install gcc cmake pkg-config libSDL2-devel Mesa-libGL-devel libcurl-devel
-  elif have apk;     then $ROOT apk add build-base cmake pkgconf sdl2-dev mesa-dev curl-dev
+  elif have apk;     then $ROOT apk add build-base cmake pkgconf sdl2-dev mesa-dev curl-dev zlib-dev
   elif have emerge;  then $ROOT emerge --noreplace dev-build/cmake media-libs/libsdl2 virtual/opengl net-misc/curl
   elif have eopkg;   then $ROOT eopkg install -y -c system.devel && $ROOT eopkg install -y cmake sdl2-devel libglvnd-devel curl-devel
   elif have nix-shell; then echo "    NixOS: run  nix-shell -p cmake pkg-config SDL2 libGL curl  and re-run with --no-deps"

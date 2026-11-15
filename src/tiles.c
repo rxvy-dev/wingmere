@@ -6,6 +6,7 @@
  * the same requests are answered with procedural terrain, so the sim still flies. */
 #include "wm.h"
 #include <curl/curl.h>
+#include <zlib.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -111,7 +112,31 @@ static bool read_file(const char *path, Buf *b) {
     fclose(f);
     return b->n > 0;
 }
+static volatile int vecState;   /* 0 resolving the tile URL, 1 ready, -1 unavailable */
 static void decode(TileData *t, Buf *b) {
+    if (t->layer == LAYER_VEC) {
+        unsigned char *p = b->p; size_t n = b->n; unsigned char *tmp = NULL;
+        if (n > 2 && p[0] == 0x1f && p[1] == 0x8b) {                 /* gzip inside the file */
+            z_stream zs = {0};
+            if (inflateInit2(&zs, 16 + MAX_WBITS) == Z_OK) {
+                size_t cap = n * 6 + 4096; tmp = malloc(cap);
+                zs.next_in = p; zs.avail_in = (uInt)n;
+                int r;
+                do {
+                    if (zs.total_out >= cap) { cap *= 2; tmp = realloc(tmp, cap); }
+                    zs.next_out = tmp + zs.total_out; zs.avail_out = (uInt)(cap - zs.total_out);
+                    r = inflate(&zs, Z_NO_FLUSH);
+                } while (r == Z_OK);
+                n = zs.total_out; p = tmp;
+                inflateEnd(&zs);
+                if (r != Z_STREAM_END) n = 0;
+            }
+        }
+        t->vec = n ? mvt_decode(p, n, t->z, t->x, t->y) : NULL;
+        t->status = t->vec ? TILE_OK : TILE_MISSING;
+        free(tmp);
+        return;
+    }
     int w, h, comp;
     unsigned char *px = stbi_load_from_memory(b->p, (int)b->n, &w, &h, &comp, 4);
     if (!px) { t->status = TILE_FAILED; return; }
@@ -125,16 +150,25 @@ static void decode(TileData *t, Buf *b) {
     stbi_image_free(px);
 }
 static void fetch(TileData *t, CURL *c) {
-    const char *tmpl = t->layer == LAYER_ELEV ? S.elevation_url : S.imagery_url;
-    bool procedural = S.offline || !tmpl[0] || !strcmp(tmpl, "procedural");
+    if (t->layer == LAYER_VEC) {
+        if (S.offline || vecState < 0) { t->status = TILE_MISSING; return; }
+        if (vecState == 0) { t->status = TILE_FAILED; return; }       /* try again once the URL is known */
+    }
+    const char *tmpl = t->layer == LAYER_ELEV ? S.elevation_url : t->layer == LAYER_VEC ? S.vector_url : S.imagery_url;
+    bool procedural = t->layer != LAYER_VEC && (S.offline || !tmpl[0] || !strcmp(tmpl, "procedural"));
     pthread_mutex_lock(&mu); bool down = netDown; pthread_mutex_unlock(&mu);
     char path[1024], miss[1040], dir[1024];
-    snprintf(dir, sizeof dir, "%s/%s/%d/%d", S.cache_dir, t->layer == LAYER_ELEV ? "elevation" : "imagery", t->z, t->x);
+    uint32_t uh = 2166136261u;                    /* each imagery source gets its own cache folder */
+    for (const char *c = tmpl; *c; c++) uh = (uh ^ (uint8_t)*c) * 16777619u;
+    if (t->layer == LAYER_ELEV) snprintf(dir, sizeof dir, "%s/elevation/%d/%d", S.cache_dir, t->z, t->x);
+    else if (t->layer == LAYER_VEC) snprintf(dir, sizeof dir, "%s/vector/%d/%d", S.cache_dir, t->z, t->x);
+    else snprintf(dir, sizeof dir, "%s/imagery-%08x/%d/%d", S.cache_dir, uh, t->z, t->x);
     snprintf(path, sizeof path, "%s/%d.tile", dir, t->y);
     snprintf(miss, sizeof miss, "%s/%d.none", dir, t->y);
     Buf b = {0};
     if (!procedural && read_file(path, &b)) { decode(t, &b); free(b.p); if (t->status == TILE_OK) return; }
     if (!procedural && access(miss, F_OK) == 0) { t->status = TILE_MISSING; return; }
+    if (t->layer == LAYER_VEC && (down || !c)) { t->status = TILE_FAILED; return; }
     if (procedural || down || !c) { proc_tile(t); return; }
     char url[1024];
     make_url(url, sizeof url, tmpl, t->z, t->x, t->y);
@@ -191,21 +225,57 @@ static void *worker(void *arg) {
         }
         if (quitting) { pthread_mutex_unlock(&mu); break; }
         req[pick].state = 2; busy++;
-        TileData t = {req[pick].layer, req[pick].z, req[pick].x, req[pick].y, 0, 0, 0, NULL, NULL};
+        TileData t = {req[pick].layer, req[pick].z, req[pick].x, req[pick].y, 0, 0, 0, NULL, NULL, NULL};
         pthread_mutex_unlock(&mu);
         fetch(&t, c);
         pthread_mutex_lock(&mu);
         busy--;
         req[pick].state = 0;
-        if (ndone < MAXDONE) done[ndone++] = t; else { free(t.rgba); free(t.height); }
+        if (ndone < MAXDONE) done[ndone++] = t; else { free(t.rgba); free(t.height); vectile_free(t.vec); }
         pthread_mutex_unlock(&mu);
     }
     if (c) curl_easy_cleanup(c);
     return NULL;
 }
 
+/* OpenFreeMap publishes its tile URL (it changes with each planet build) in a TileJSON document */
+static void *resolve_vector(void *arg) {
+    (void)arg;
+    if (S.vector_url[0]) { vecState = 1; return NULL; }
+    if (S.offline || !S.vector_tilejson[0]) { vecState = -1; return NULL; }
+    CURL *c = curl_easy_init();
+    Buf b = {0};
+    if (c) {
+        curl_easy_setopt(c, CURLOPT_URL, S.vector_tilejson);
+        curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, on_data);
+        curl_easy_setopt(c, CURLOPT_WRITEDATA, &b);
+        curl_easy_setopt(c, CURLOPT_USERAGENT, S.user_agent);
+        curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(c, CURLOPT_TIMEOUT, 15L);
+        curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+        CURLcode rc = curl_easy_perform(c);
+        curl_easy_cleanup(c);
+        if (rc == CURLE_OK && b.n) {
+            b.p = realloc(b.p, b.n + 1); b.p[b.n] = 0;
+            char *t = strstr((char *)b.p, "\"tiles\"");
+            char *q = t ? strchr(t, '[') : NULL;
+            q = q ? strchr(q, '"') : NULL;
+            char *e = q ? strchr(q + 1, '"') : NULL;
+            if (e && e - q - 1 < (long)sizeof S.vector_url) {
+                memcpy(S.vector_url, q + 1, e - q - 1); S.vector_url[e - q - 1] = 0;
+                fprintf(stderr, "wingmere: map data from %s\n", S.vector_url);
+                vecState = 1; free(b.p); return NULL;
+            }
+        }
+    }
+    free(b.p);
+    fprintf(stderr, "wingmere: no OpenStreetMap vector tiles (TileJSON unreachable) - no buildings or coastlines this time\n");
+    vecState = -1;
+    return NULL;
+}
 void tiles_init(void) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
+    pthread_t rt; pthread_create(&rt, NULL, resolve_vector, NULL); pthread_detach(rt);
     mkdirs(S.cache_dir);
     nthreads = S.threads < 1 ? 1 : (S.threads > 16 ? 16 : S.threads);
     for (int i = 0; i < nthreads; i++) pthread_create(&threads[i], NULL, worker, NULL);

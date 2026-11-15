@@ -6,8 +6,15 @@ Yellow Biplane - by AUTHOR NAME (LINK) - CC BY 4.0
 F4U Corsair - by AUTHOR NAME (LINK) - CC BY 4.0
 737 MAX 8 in Lion Air colours - by AUTHOR NAME (LINK) - CC BY 4.0
 Airdrop Transport (Free Fire plane) - by AUTHOR NAME (LINK) - CC BY 4.0
+F-35C Lightning II - by AUTHOR NAME (LINK) - CC BY 4.0
+F-14 Tomcat - by AUTHOR NAME (LINK) - CC BY 4.0
+F-117 Nighthawk - by AUTHOR NAME (LINK) - CC BY 4.0
+Landing gear on the F-35 and the transport was added for the game.
 Models were converted, re-oriented and scaled for the game; textures were resized.
 =WORLD DATA
+Map data: (c) OpenStreetMap contributors (ODbL), vector tiles by OpenMapTiles and OpenFreeMap
+Optional imagery: Esri World Imagery - Esri, Maxar, Earthstar Geographics, GIS User Community
+Optional imagery: USGS National Map (public domain)
 Imagery: Sentinel-2 cloudless 2016 - https://s2maps.eu by EOX IT Services GmbH
 (Contains modified Copernicus Sentinel data 2016 & 2017), CC BY 4.0
 Elevation: Terrain Tiles on AWS (Mapzen) - SRTM, GMTED2010, ETOPO1, NED, Canada CDEM,

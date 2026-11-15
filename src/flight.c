@@ -94,6 +94,7 @@ void flight_trim(Flight *f, float gamma_deg) {
     float D = q * a->wing_area * (a->cd0 + a->k * cl * cl + a->flap_cd * f->flaps + a->gear_cd * f->gearDown);
     float T = full_thrust(a, Vs, rho), need = D + W * sinf(gam);
     f->throttle = clampf(a->jet ? (need / T - 0.04f) / 0.96f : need / T, 0, 1);
+    if (a->afterburner > 0) f->throttle *= 0.9f;
 }
 
 static void crash(Flight *f, const char *why) {
@@ -135,7 +136,10 @@ static void substep(Flight *f, float h) {
     force = vadd(force, vmul(Rt, -0.2f * beta * qd * S));
     /* ---- thrust */
     float thr = f->throttle, T;
-    if (a->jet) T = a->thrust * (0.04f + 0.96f * thr) * powf(rho / 1.225f, 0.75f) * jet_lapse(mach);
+    if (a->jet) {
+        float dry = a->afterburner > 0 ? fminf(thr / 0.9f, 1) : thr;     /* the last tenth of the lever is reheat */
+        T = (a->thrust * (0.04f + 0.96f * dry) + f->ab * fmaxf(a->afterburner - a->thrust, 0)) * powf(rho / 1.225f, 0.75f) * jet_lapse(mach);
+    }
     else T = a->thrust * thr * clampf(1 - Vv / a->prop_v * 0.8f, 0.15f, 1) * powf(rho / 1.225f, 0.7f);
     force = vadd(force, vmul(F, T));
     force = vadd(force, vmul(u, -9.80665f * a->mass));
@@ -152,7 +156,7 @@ static void substep(Flight *f, float h) {
     v3 torque = V(0, 0, 0);
     bool ground = false;
     int wheels = 0;
-    float crashVs = a->jet ? 4.0f : 4.6f;
+    float crashVs = a->jet ? 5.2f : 5.6f;   /* ~1000 fpm: only a real arrival breaks the gear */
     float cl = cosf((float)(lat * M_PI / 180));
     bool gearOut = !a->retract || f->gearDown > 0.95f;
     for (int i = 0; i < 3 && gearOut; i++) {
@@ -167,11 +171,11 @@ static void substep(Flight *f, float h) {
         float vn = vdot(vp, u);
         if (water && vlen(f->vel) > 3) { crash(f, "DITCHED IN THE WATER"); return; }
         if (!f->contact[i]) {
-            if (vn < -crashVs) { crash(f, "HARD LANDING - GEAR COLLAPSED"); return; }
+            if (vn < -crashVs * (i == 2 ? 1.7f : 1.0f)) { crash(f, "HARD LANDING - GEAR COLLAPSED"); return; }
             if (i < 2 && !f->contact[0] && !f->contact[1]) { f->lastTouchdownVs = vn; f->touchdowns++; audio_event(1); }
         }
         f->contact[i] = true;
-        float share = a->mass / 3, k = a->mass * 9.81f / (3 * 0.12f), c = 2 * 0.75f * sqrtf(k * share);
+        float share = a->mass / 3, k = a->mass * 9.81f / (3 * 0.12f), c = 2 * 0.95f * sqrtf(k * share);   /* well damped: no bouncing */
         float Fn = fmaxf(k * depth - c * vn, 0);
         v3 wf = vnorm(vsub(F, vmul(u, vdot(F, u)))), side = vcross(wf, u);
         if (i == 2) {
@@ -238,7 +242,10 @@ void flight_step(Flight *f, float dt) {
     f->bank = atan2f(-vdot(Rt, f->up), vdot(Up, f->up)) / DEG;
     float gh = terrain_height(f->lat, f->lon, NULL, NULL);
     f->agl = (float)(f->alt - gh) + lowest_gear(a, f->rot, f->up);
-    float target = a->jet ? 20 + 80 * f->throttle : 700 + 1900 * f->throttle + f->ias * 2;
+    float abT = a->afterburner > 0 && f->throttle > 0.9f ? (f->throttle - 0.9f) / 0.1f : 0;
+    f->ab += (abT - f->ab) * (1 - expf(-dt * 4));
+    float lever = a->afterburner > 0 ? fminf(f->throttle / 0.9f, 1) : f->throttle;
+    float target = a->jet ? 20 + 80 * lever : 700 + 1900 * f->throttle + f->ias * 2;
     f->rpm += (target - f->rpm) * (1 - expf(-dt * (a->jet ? 0.6f : 3.0f)));
     f->propAngle = fmodf(f->propAngle + (a->jet ? f->rpm * 0.6f : f->rpm) / 60 * 2 * PI * dt * (a->jet ? 1 : 0.35f), 2 * PI * 64);
 }

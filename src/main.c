@@ -18,7 +18,7 @@ static bool invertPitch;
 static char dataDir[600], cfgPath[700], scorePath[700];
 
 /* ------------------------------------------------------------------ state */
-enum { ST_MENU, ST_SEARCH, ST_CHAL, ST_SETTINGS, ST_CREDITS, ST_LOADING, ST_FLY, ST_PAUSE };
+enum { ST_MENU, ST_SEARCH, ST_CHAL, ST_SETTINGS, ST_CREDITS, ST_LOADING, ST_FLY, ST_PAUSE, ST_HANGAR };
 enum { CAM_CHASE, CAM_COCKPIT, CAM_TAIL, CAM_ORBIT, CAM_TOWER, CAM_FLYBY, NCAM };
 static const char *CAM_NAME[NCAM] = {"CHASE", "PILOT", "TAIL", "ORBIT", "TOWER", "FLYBY"};
 static int state = ST_MENU, menuSel, setSel, chalSel, pauseSel;
@@ -45,6 +45,33 @@ static char search[32]; static int searchRes[12], nSearch, searchSel;
 static float loadTimer; static int loadQueue0;
 static float fps = 60;
 static bool mouseLook, freezeShot;
+/* flying aids */
+static bool assist = true, guide = true, athr, touchedDown;
+static float athrSpd, airTime, tgtPitch, tgtBank, eInt, prevIas, yawPrev;
+static bool holdInit, bankHold;
+/* passengers */
+static float comfort = 100, screamCool, reviewTimer; static bool reviewDone; static int stars; static char quote[96];
+/* imagery providers */
+typedef struct { const char *name, *url, *attr; int maxz; } Provider;
+static const Provider PROV[3] = {
+    {"ESRI WORLD IMAGERY (SHARP)", "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "IMAGERY: ESRI, MAXAR, EARTHSTAR GEOGRAPHICS, GIS USER COMMUNITY", 17},
+    {"SENTINEL-2 CLOUDLESS (OPEN DATA)", "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg", "IMAGERY: SENTINEL-2 CLOUDLESS 2016 BY EOX (CC BY 4.0)", 14},
+    {"USGS IMAGERY (USA ONLY)", "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}", "IMAGERY: USGS NATIONAL MAP (PUBLIC DOMAIN)", 16},
+};
+static int provSel;
+/* hangar */
+static const char *PAINT_NAME[12] = {"FACTORY", "BLACK METAL", "BLOOD RED", "ARCTIC WHITE", "NAVY", "GUNMETAL", "DESERT", "GOLD", "OLIVE DRAB", "ROYAL BLUE", "SUNSET ORANGE", "HOT PINK"};
+static const float PAINT_RGB[12][3] = {{1, 1, 1}, {0.035f, 0.035f, 0.04f}, {0.55f, 0.02f, 0.02f}, {0.92f, 0.93f, 0.95f}, {0.05f, 0.09f, 0.22f}, {0.22f, 0.24f, 0.26f}, {0.62f, 0.5f, 0.32f}, {0.85f, 0.6f, 0.15f}, {0.22f, 0.25f, 0.12f}, {0.08f, 0.2f, 0.7f}, {0.95f, 0.35f, 0.05f}, {0.95f, 0.25f, 0.55f}};
+static const char *FINISH_NAME[5] = {"FACTORY", "MATTE", "GLOSS", "CHROME", "SATIN METAL"};
+static const char *SMOKE_NAME[6] = {"WHITE", "RED", "BLUE", "YELLOW", "GREEN", "BLACK"};
+static const float SMOKE_RGB[6][3] = {{0.95f, 0.95f, 0.95f}, {0.9f, 0.08f, 0.06f}, {0.1f, 0.25f, 0.9f}, {0.95f, 0.8f, 0.1f}, {0.15f, 0.8f, 0.25f}, {0.06f, 0.06f, 0.06f}};
+static int lookPaint[16], lookFinish[16], lookSmoke[16], hangSel;
+static void apply_look(void) {
+    int i = acSel;
+    for (int k = 0; k < 3; k++) { g_look.paint[k] = PAINT_RGB[lookPaint[i]][k]; g_look.smokeCol[k] = SMOKE_RGB[lookSmoke[i]][k]; }
+    g_look.amount = lookPaint[i] ? 0.92f : 0;
+    g_look.finish = lookFinish[i];
+}
 
 /* landing evaluation */
 typedef struct { bool have; float vs, along, across, crab, bank, speed; int rw, end; } Touch;
@@ -82,6 +109,7 @@ static const char *START_NAME[3] = {"ON THE RUNWAY", "ON FINAL APPROACH", "IN TH
 #define GREEN 0.35f, 1.0f, 0.45f
 #define GREY 0.6f, 0.6f, 0.62f
 
+static void cycle(int *v, int n, int d) { *v = ((*v + d) % n + n) % n; }
 static void say(const char *m) { snprintf(msg, sizeof msg, "%s", m); msgTimer = 3.5f; }
 
 /* ------------------------------------------------------------------ files */
@@ -129,11 +157,16 @@ static void settings_defaults(void) {
     snprintf(S.elevation_url, sizeof S.elevation_url, "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png");
     snprintf(S.user_agent, sizeof S.user_agent, "Wingmere/" WM_VERSION " (open-source flight simulator; https://github.com/rxvy-dev/wingmere)");
     home_path(S.cache_dir, sizeof S.cache_dir, "XDG_CACHE_HOME", ".cache", "");
-    S.imagery_max_zoom = 14; S.elevation_max_zoom = 12; S.threads = 6; S.texture_budget = 1536; S.detail = 1.0f; S.offline = false;
+    S.imagery_max_zoom = 14; S.elevation_max_zoom = 12; S.threads = 8; S.texture_budget = 1536; S.detail = 1.0f; S.offline = false;
+    snprintf(S.vector_tilejson, sizeof S.vector_tilejson, "https://tiles.openfreemap.org/planet");
+    S.buildings = true;
     home_path(cfgPath, sizeof cfgPath, "XDG_CONFIG_HOME", ".config", "/wingmere.cfg");
     home_path(scorePath, sizeof scorePath, "XDG_DATA_HOME", ".local/share", "/scores.txt");
 }
 static char cfgAircraft[32], cfgAirport[8] = "KSFO", cfgRunway[6] = "28R";
+static char lookCfg[16][80]; static int nLookCfg;
+static char customImagery[512];
+static bool cliOffline, cfgOffline;   /* --offline is for this run only */   /* imagery_url in the config overrides the built-in sources */
 static void settings_load(void) {
     FILE *f = fopen(cfgPath, "r");
     if (!f) return;
@@ -148,7 +181,7 @@ static void settings_load(void) {
         for (char *e = k + strlen(k) - 1; e >= k && (*e == ' ' || *e == '\t'); e--) *e = 0;
         while (*v == ' ') v++;
         v[strcspn(v, "\r\n")] = 0;
-        if (!strcmp(k, "imagery_url")) snprintf(S.imagery_url, sizeof S.imagery_url, "%s", v);
+        if (!strcmp(k, "imagery_url")) snprintf(customImagery, sizeof customImagery, "%s", v);
         else if (!strcmp(k, "elevation_url")) snprintf(S.elevation_url, sizeof S.elevation_url, "%s", v);
         else if (!strcmp(k, "cache_dir")) snprintf(S.cache_dir, sizeof S.cache_dir, "%s", v);
         else if (!strcmp(k, "imagery_max_zoom")) S.imagery_max_zoom = atoi(v);
@@ -156,7 +189,10 @@ static void settings_load(void) {
         else if (!strcmp(k, "threads")) S.threads = atoi(v);
         else if (!strcmp(k, "texture_budget")) S.texture_budget = atoi(v);
         else if (!strcmp(k, "detail")) S.detail = (float)atof(v);
-        else if (!strcmp(k, "offline")) S.offline = atoi(v);
+        else if (!strcmp(k, "offline")) S.offline = cfgOffline = atoi(v);
+        else if (!strcmp(k, "vector_tilejson")) snprintf(S.vector_tilejson, sizeof S.vector_tilejson, "%s", v);
+        else if (!strcmp(k, "vector_url")) snprintf(S.vector_url, sizeof S.vector_url, "%s", v);
+        else if (!strcmp(k, "buildings")) S.buildings = atoi(v);
         else if (!strcmp(k, "width")) rc.w = atoi(v);
         else if (!strcmp(k, "height")) rc.h = atoi(v);
         else if (!strcmp(k, "fullscreen")) fullscreen = atoi(v);
@@ -174,6 +210,10 @@ static void settings_load(void) {
         else if (!strcmp(k, "weather")) weatherSel = atoi(v) % 5;
         else if (!strcmp(k, "wind_dir")) windDir = (float)atof(v);
         else if (!strcmp(k, "wind_kt")) windKt = (float)atof(v);
+        else if (!strcmp(k, "assist")) assist = atoi(v);
+        else if (!strcmp(k, "guide")) guide = atoi(v);
+        else if (!strcmp(k, "imagery")) provSel = atoi(v) % 3;
+        else if (!strncmp(k, "look_", 5)) snprintf(lookCfg[nLookCfg < 16 ? nLookCfg++ : 15], 80, "%s %s", k + 5, v);
     }
     fclose(f);
 }
@@ -183,9 +223,12 @@ static void settings_save(void) {
     FILE *f = fopen(cfgPath, "w");
     if (!f) return;
     fprintf(f, "# WINGMERE settings - edit while the game is closed\n");
-    fprintf(f, "imagery_url = %s\nelevation_url = %s\ncache_dir = %s\n", S.imagery_url, S.elevation_url, S.cache_dir);
+    if (customImagery[0]) fprintf(f, "imagery_url = %s\n", customImagery);
+    char defCache[512]; home_path(defCache, sizeof defCache, "XDG_CACHE_HOME", ".cache", "");
+    if (strcmp(defCache, S.cache_dir)) fprintf(f, "cache_dir = %s\n", S.cache_dir);
+    fprintf(f, "elevation_url = %s\nvector_tilejson = %s\nbuildings = %d\n", S.elevation_url, S.vector_tilejson, S.buildings);
     fprintf(f, "imagery_max_zoom = %d\nelevation_max_zoom = %d\nthreads = %d\ntexture_budget = %d\ndetail = %.2f\noffline = %d\n",
-            S.imagery_max_zoom, S.elevation_max_zoom, S.threads, S.texture_budget, S.detail, S.offline);
+            S.imagery_max_zoom, S.elevation_max_zoom, S.threads, S.texture_budget, S.detail, cliOffline ? cfgOffline : S.offline);
     fprintf(f, "width = %d\nheight = %d\nfullscreen = %d\nmsaa = %d\nrender_scale = %.2f\nshadow_res = %d\nclouds = %d\nvolume = %.2f\ninvert_pitch = %d\n",
             rc.w, rc.h, fullscreen, rc.msaa, rc.scale, rc.shadowRes, rc.clouds, volume, invertPitch);
     if (g_naircraft) fprintf(f, "aircraft = %s\n", g_aircraft[acSel].id);
@@ -194,6 +237,8 @@ static void settings_save(void) {
         if (g_airports[aptSel].nrw) fprintf(f, "runway = %s\n", rw_ident(g_airports[aptSel].rw0 + rwSel, rwEnd));
     }
     fprintf(f, "start = %d\ntime = %.2f\nweather = %d\nwind_dir = %.0f\nwind_kt = %.0f\n", startMode, tod, weatherSel, windDir, windKt);
+    fprintf(f, "assist = %d\nguide = %d\nimagery = %d\n", assist, guide, provSel);
+    for (int i = 0; i < g_naircraft; i++) fprintf(f, "look_%s = %d %d %d\n", g_aircraft[i].id, lookPaint[i], lookFinish[i], lookSmoke[i]);
     fclose(f);
 }
 static void scores_load(void) {
@@ -289,9 +334,14 @@ static void spawn(void) {
         FL.vel = vadd(FL.vel, FL.wind);
         flight_trim(&FL, mode == 1 ? -3.0f : 0.0f);
         parkBrake = false;
+        if (assist) { athr = true; athrSpd = spd; }
     }
     ctlElev = ctlAil = ctlRud = 0;
     ap = false; chaseInit = false; flybyOk = false; towerTimer = 0;
+    if (mode == 0) athr = false;
+    holdInit = false; airTime = FL.onGround ? 0 : 5; touchedDown = false; eInt = 0;
+    comfort = 100; reviewDone = false; reviewTimer = 0; screamCool = 0;
+    apply_look(); g_look.smokeOn = false;
     td.have = false; lastTouchdowns = FL.touchdowns; tdTimer = 0; scored = false; score = 0;
     fx_clear();
     simTime = 0;
@@ -387,7 +437,22 @@ static const char *grade_of(float fpm) {
     float v = fabsf(fpm);
     return v < 60 ? "BUTTER" : v < 180 ? "SMOOTH" : v < 300 ? "FIRM" : v < 500 ? "HARD" : "CARRIER STYLE";
 }
+static const char *QUOTES[5][4] = {
+    {"\"I'M NEVER FLYING AGAIN.\"", "\"MY COFFEE IS ON THE CEILING.\"", "\"WAS THAT A LANDING OR A CRASH?\"", "\"I SAW MY LIFE FLASH BEFORE MY EYES.\""},
+    {"\"BIT OF A ROLLERCOASTER.\"", "\"MY KNUCKLES ARE STILL WHITE.\"", "\"THE CAPTAIN SEEMED... BUSY.\"", "\"I'LL TAKE THE TRAIN NEXT TIME.\""},
+    {"\"FINE. WE'RE ALIVE.\"", "\"AVERAGE FLIGHT, AVERAGE PEANUTS.\"", "\"FIRM, BUT FAIR.\"", "\"GOT ME THERE.\""},
+    {"\"LOVELY FLIGHT, THANK YOU CAPTAIN.\"", "\"BARELY SPILLED MY DRINK.\"", "\"SMOOTH OPERATOR.\"", "\"WOULD FLY AGAIN.\""},
+    {"\"BUTTER. ABSOLUTE BUTTER.\"", "\"DIDN'T EVEN FEEL THE TOUCHDOWN.\"", "\"THE WHOLE CABIN CLAPPED.\"", "\"THIS CAPTAIN IS A LEGEND.\""},
+};
 static void on_touchdown(void) {
+    if (!touchedDown && athr) { athr = false; FL.throttle = 0; say("RETARD - AUTOTHROTTLE OFF"); }
+    touchedDown = true;
+    float fpmv = fabsf(FL.lastTouchdownVs / FT * 60);
+    if (FL.def->pax > 0 && !FL.crashed) {
+        if (fpmv < 200) audio_event(6);
+        else if (fpmv > 480) { audio_event(5); comfort -= 30; }
+        comfort -= clampf((fpmv - 150) / 12, 0, 40);
+    }
     td.have = true; td.vs = FL.lastTouchdownVs / FT * 60; td.speed = FL.gs; td.bank = FL.bank; td.rw = -1;
     tdTimer = 6;
     find_approach();
@@ -426,6 +491,22 @@ static void evaluate_landing(void) {
     if (!rightRw) { score /= 2; snprintf(scoreWhy, sizeof scoreWhy, "WRONG RUNWAY - HALF POINTS"); }
     else snprintf(scoreWhy, sizeof scoreWhy, "%s", grade_of(td.vs));
     if (score > bestScore[chalActive]) { bestScore[chalActive] = score; scores_save(); strncat(scoreWhy, " - NEW BEST", sizeof scoreWhy - strlen(scoreWhy) - 1); }
+}
+
+static void passengers(float dt) {
+    if (FL.def->pax <= 0 || FL.crashed) return;
+    float g = FL.gload, stress = fmaxf(fabsf(g - 1) - 0.25f, 0) * 30 + fmaxf(fabsf(FL.bank) - 32, 0) * 0.7f + fmaxf(fabsf(FL.pitch) - 18, 0) * 0.8f;
+    if (FL.stall) stress += 25;
+    comfort = clampf(comfort - stress * dt + 0.8f * dt, 0, 100);
+    screamCool -= dt;
+    if ((g < 0.35f || g > 2.1f || fabsf(FL.bank) > 62 || FL.stall) && screamCool <= 0 && !FL.onGround) { audio_event(5); screamCool = 6; say("THE PASSENGERS ARE SCREAMING"); }
+    if (touchedDown && FL.onGround && FL.gs < 25 * KT && !reviewDone) {
+        reviewDone = true; reviewTimer = 12;
+        float fpmv = td.have ? fabsf(td.vs) : 300;
+        float sc = comfort / 100 * 3.2f + (fpmv < 120 ? 1.8f : fpmv < 250 ? 1.2f : fpmv < 450 ? 0.5f : 0);
+        stars = (int)clampf(roundf(sc), 1, 5);
+        snprintf(quote, sizeof quote, "%s", QUOTES[stars - 1][(int)(realTime * 7) & 3]);
+    }
 }
 
 /* ------------------------------------------------------------------ cameras */
@@ -528,7 +609,9 @@ static float W, H, s_;
 #define SZ(v) ((v) * s_)
 static void panel(float x, float y, float w, float h, float a) { hud_rect(x, y, w, h, 0.02f, 0.02f, 0.025f, a); hud_rect(x, y, w, SZ(2), RED, 0.9f); }
 static void attribution(float a) {
-    hud_text(W - SZ(12), H - SZ(5), SZ(9), "IMAGERY: SENTINEL-2 CLOUDLESS 2016 BY EOX (CC BY 4.0)  ELEVATION: TERRAIN TILES (MAPZEN, AWS)  AIRPORTS: OURAIRPORTS", WHITE, a, 2);
+    char b[320];
+    snprintf(b, sizeof b, "%s  ELEVATION: TERRAIN TILES (MAPZEN, AWS)  MAP DATA: OPENSTREETMAP CONTRIBUTORS, OPENMAPTILES, OPENFREEMAP  AIRPORTS: OURAIRPORTS", S.offline ? "OFFLINE WORLD" : PROV[provSel].attr);
+    hud_text(W - SZ(12), H - SZ(5), SZ(9), b, WHITE, a, 2);
 }
 static void draw_compass(float cx, float y, float w) {
     float hdg = FL.heading, ppd = w / 90;
@@ -621,9 +704,67 @@ static void bar_v(float x, float y, float w, float h, float v, float r, float g,
     hud_rect(x, y + h * (1 - v), w, h * v, r, g, b, 0.85f);
     hud_text(x + w / 2, y + h + SZ(16), SZ(11), label, WHITE, 0.9f, 1);
 }
+static void draw_gates(void) {
+    if (!guide || approach_rw < 0 || FL.onGround) return;
+    double tl, tn; float brg, el;
+    runway_end(approach_rw, approach_end, &tl, &tn, &brg, &el);
+    float dist = (float)geo_dist(FL.lat, FL.lon, tl, tn);
+    if (dist > 14000) return;
+    Runway *r = &g_runways[approach_rw];
+    float hw = fmaxf(r->width * 0.5f + 6, FL.def->span * 0.75f), hh = fmaxf(hw * 0.45f, 8);
+    float hAbove = (float)FL.alt - el - 15;
+    float gsDev = atan2f(hAbove, fmaxf(dist, 1)) / DEG - 3.0f;
+    float b = (float)geo_bearing(tl, tn, FL.lat, FL.lon);
+    float locDev = wrap180(b - (brg + 180));
+    bool good = fabsf(gsDev) < 0.45f && fabsf(locDev) < 1.2f;
+    for (int i = 1; i <= 22; i++) {
+        float d = i * 420.0f;
+        if (d > dist - 150 || d > 9500) continue;
+        double gl, gn; geo_offset(tl, tn, brg + 180, d, &gl, &gn);
+        float h = el + 15 + d * tanf(3 * DEG);
+        v3 e, n, u; enu_basis(gl, gn, &e, &n, &u);
+        v3 side = vadd(vmul(e, cosf(brg * DEG)), vmul(n, -sinf(brg * DEG)));
+        d3 c = geo_to_ecef(gl, gn, h);
+        float pts[4][2]; bool ok = true;
+        float cx[4] = {-1, 1, 1, -1}, cy[4] = {-1, -1, 1, 1};
+        for (int k = 0; k < 4; k++) {
+            d3 p = dadd(c, f2d(vadd(vmul(side, cx[k] * hw), vmul(u, cy[k] * hh))));
+            if (!world_to_screen(p, &cam, &pts[k][0], &pts[k][1])) ok = false;
+        }
+        if (!ok) continue;
+        float a = clampf(1.2f - (dist - d) / 7000, 0.25f, 0.95f);
+        float th = clampf(SZ(3) * (1500 / fmaxf(dist - d, 200)), SZ(1), SZ(4));
+        for (int k = 0; k < 4; k++) {
+            int k2 = (k + 1) & 3;
+            if (good) hud_line(pts[k][0], pts[k][1], pts[k2][0], pts[k2][1], th, GREEN, a);
+            else hud_line(pts[k][0], pts[k][1], pts[k2][0], pts[k2][1], th, 0.95f, 0.3f, 0.95f, a);
+        }
+    }
+}
+static void draw_review(void) {
+    if (reviewTimer <= 0) return;
+    float a = fminf(reviewTimer, 1);
+    float w = SZ(470), h = SZ(150), x = W - w - SZ(30), y = SZ(130);
+    panel(x, y, w, h, 0.85f * a);
+    hud_text(x + SZ(20), y + SZ(34), SZ(13), FL.def->jet ? "PASSENGER REVIEW" : "TROOP REVIEW", GREY, a, 0);
+    for (int i = 0; i < 5; i++) {
+        float sx = x + SZ(30) + i * SZ(40), sy = y + SZ(70);
+        bool on = i < stars;
+        for (int k = 0; k < 5; k++) {
+            float a0 = -PI / 2 + k * 2 * PI / 5, a1 = a0 + 2 * PI / 5, am = a0 + PI / 5;
+            hud_tri(sx, sy, sx + cosf(a0) * SZ(16), sy + sinf(a0) * SZ(16), sx + cosf(am) * SZ(7), sy + sinf(am) * SZ(7), on ? 1.0f : 0.3f, on ? 0.75f : 0.3f, on ? 0.1f : 0.3f, a);
+            hud_tri(sx, sy, sx + cosf(am) * SZ(7), sy + sinf(am) * SZ(7), sx + cosf(a1) * SZ(16), sy + sinf(a1) * SZ(16), on ? 1.0f : 0.3f, on ? 0.75f : 0.3f, on ? 0.1f : 0.3f, a);
+        }
+    }
+    hud_text(x + SZ(20), y + SZ(118), SZ(12), quote, WHITE, a, 0);
+    char b[48]; snprintf(b, sizeof b, "COMFORT %d%%", (int)comfort);
+    hud_text(x + w - SZ(20), y + SZ(34), SZ(12), b, WHITE, a, 2);
+}
 static void draw_flight_hud(void) {
     char b[128];
     float t = realTime, blink = fmodf(t, 0.8f) < 0.45f ? 1.0f : 0.25f;
+    draw_gates();
+    draw_review();
     if (camMode == CAM_COCKPIT) draw_pitch_ladder();
     /* bottom panel */
     float ph = SZ(96), py = H - ph;
@@ -682,6 +823,16 @@ static void draw_flight_hud(void) {
         snprintf(b, sizeof b, "AP  HDG %03.0f  ALT %d  SPD %d", fmodf(apHdg + 360, 360), (int)lroundf(apAlt / FT / 100) * 100, (int)lroundf(apSpd / KT));
         hud_text(SZ(24), SZ(100), SZ(13), b, GREEN, 0.95f, 0);
     }
+    float ly2 = ap ? SZ(122) : SZ(100);
+    if (athr && !ap) { snprintf(b, sizeof b, "A/THR %d KT", (int)lroundf(athrSpd / KT)); hud_text(SZ(24), ly2, SZ(13), b, GREEN, 0.95f, 0); ly2 += SZ(22); }
+    if (assist) { hud_text(SZ(24), ly2, SZ(10), "ASSISTED", GREY, 0.8f, 0); ly2 += SZ(20); }
+    if (FL.def->pax > 0) {
+        snprintf(b, sizeof b, "%s %d   COMFORT %d%%", FL.def->jet ? "PAX" : "TROOPS", FL.def->pax, (int)comfort);
+        float c = comfort / 100;
+        hud_text(SZ(24), ly2, SZ(12), b, 1.0f - c * 0.6f, 0.4f + 0.6f * c, 0.35f + 0.1f * c, 0.95f, 0);
+    }
+    if (g_look.smokeOn) hud_text(SZ(24), ly2 + SZ(22), SZ(11), "SMOKE ON", WHITE, 0.9f, 0);
+    if (FL.ab > 0.1f) hud_text(bx + SZ(28), py + SZ(84), SZ(13), "AFTERBURNER", 1.0f, 0.55f, 0.15f, 0.95f, 0);
     if (chalActive >= 0) {
         snprintf(b, sizeof b, "CHALLENGE: %s", CH[chalActive].title);
         hud_text(W / 2, SZ(36), SZ(14), b, RED, 0.95f, 1);
@@ -699,6 +850,13 @@ static void draw_flight_hud(void) {
         hud_text(W - SZ(24), SZ(76), SZ(11), b, GREY, 0.9f, 2);
     }
     draw_ils();
+    /* radio-altitude callouts on short final */
+    if (approach_rw >= 0 && !FL.onGround && FL.vs < 0 && FL.gearDown > 0.9f) {
+        float ft = FL.agl / FT;
+        static const int CALL[6] = {100, 50, 40, 30, 20, 10};
+        for (int i = 0; i < 6; i++) if (ft < CALL[i] + 6 && ft > CALL[i] - 4) { snprintf(b, sizeof b, "%d", CALL[i]); hud_text(W / 2, H * 0.36f, SZ(34), b, GREEN, 0.95f, 1); }
+        if (ft < 35 && ft > 8 && FL.def->mass > 15000) hud_text(W / 2, H * 0.36f + SZ(40), SZ(18), "FLARE", GREEN, blink, 1);
+    }
     /* warnings */
     float wy = SZ(140);
     if (FL.stall) { hud_text(W / 2, wy, SZ(30), "STALL", RED, blink, 1); wy += SZ(40); }
@@ -782,7 +940,7 @@ static void menu_item(int i, float x, float y, const char *label, const char *va
     }
 }
 static void fmt_time(char *b, size_t n, float h) { h = fmodf(h + 24, 24); snprintf(b, n, "%02d:%02d", (int)h, (int)(fmodf(h, 1) * 60 + 0.5f) % 60); }
-enum { MI_FREE, MI_CHAL, MI_AIRCRAFT, MI_AIRPORT, MI_RUNWAY, MI_START, MI_TIME, MI_WEATHER, MI_WIND, MI_SETTINGS, MI_CREDITS, MI_QUIT, MI_N };
+enum { MI_FREE, MI_CHAL, MI_AIRCRAFT, MI_HANGAR, MI_AIRPORT, MI_RUNWAY, MI_START, MI_TIME, MI_WEATHER, MI_WIND, MI_SETTINGS, MI_CREDITS, MI_QUIT, MI_N };
 static void draw_menu(void) {
     char b[160];
     hud_rect(0, 0, SZ(700), H, 0.01f, 0.01f, 0.012f, 0.72f);
@@ -797,6 +955,7 @@ static void draw_menu(void) {
         case MI_FREE: label = "FREE FLIGHT"; break;
         case MI_CHAL: label = "LANDING CHALLENGES"; break;
         case MI_AIRCRAFT: label = "AIRCRAFT"; val = g_naircraft ? g_aircraft[acSel].name : "NONE"; break;
+        case MI_HANGAR: label = "HANGAR"; snprintf(vb, sizeof vb, "%s / %s", PAINT_NAME[lookPaint[acSel]], FINISH_NAME[lookFinish[acSel]]); val = vb; break;
         case MI_AIRPORT: label = "AIRPORT";
             if (aptSel >= 0) snprintf(vb, sizeof vb, "%s  %.21s", g_airports[aptSel].ident, g_airports[aptSel].name); else snprintf(vb, sizeof vb, "-");
             val = vb; break;
@@ -886,7 +1045,34 @@ static void draw_challenges(void) {
         if (bestScore[i] > 0) { snprintf(b, sizeof b, "BEST %d", bestScore[i]); hud_text(x + w - SZ(30), iy + SZ(2), SZ(14), b, WHITE, 1, 2); }
     }
 }
-enum { SI_DETAIL, SI_SCALE, SI_MSAA, SI_CLOUDS, SI_SHADOW, SI_VOLUME, SI_INVERT, SI_FULL, SI_OFFLINE, SI_BACK, SI_N };
+enum { HI_PAINT, HI_FINISH, HI_SMOKE, HI_BACK, HI_N };
+static void hangar_change(int d) {
+    if (hangSel == HI_PAINT) cycle(&lookPaint[acSel], 12, d);
+    else if (hangSel == HI_FINISH) cycle(&lookFinish[acSel], 5, d);
+    else if (hangSel == HI_SMOKE) cycle(&lookSmoke[acSel], 6, d);
+    else if (!d) state = ST_MENU;
+    apply_look(); settings_save(); audio_event(0);
+}
+static void draw_hangar(void) {
+    float w = SZ(620), h = SZ(330), x = SZ(40), y = H - h - SZ(60);
+    panel(x, y, w, h, 0.9f);
+    hud_title(x + SZ(24), y + SZ(50), SZ(26), "HANGAR", RED, 1, 0);
+    hud_text(x + w - SZ(24), y + SZ(46), SZ(13), g_aircraft[acSel].name, WHITE, 0.9f, 2);
+    const char *lab[HI_N] = {"PAINT", "FINISH", "SMOKE TRAIL (X IN FLIGHT)", "BACK"};
+    const char *val[HI_N] = {PAINT_NAME[lookPaint[acSel]], FINISH_NAME[lookFinish[acSel]], SMOKE_NAME[lookSmoke[acSel]], ""};
+    nItems = HI_N;
+    for (int i = 0; i < HI_N; i++) {
+        float iy = y + SZ(110) + i * SZ(48);
+        itemBox[i] = (Box){x + SZ(16), iy - SZ(30), w - SZ(32), SZ(42)};
+        if (i == hangSel) hud_rect(x + SZ(16), iy - SZ(30), w - SZ(32), SZ(42), RED, 0.85f);
+        hud_text(x + SZ(30), iy, SZ(17), lab[i], WHITE, 1, 0);
+        if (val[i][0]) { char b[64]; snprintf(b, sizeof b, i == hangSel ? "<  %s  >" : "%s", val[i]); hud_text(x + w - SZ(30), iy, SZ(15), b, WHITE, 1, 2); }
+        if (i == HI_PAINT && lookPaint[acSel]) hud_rect(x + w - SZ(300), iy - SZ(16), SZ(18), SZ(18), PAINT_RGB[lookPaint[acSel]][0], PAINT_RGB[lookPaint[acSel]][1], PAINT_RGB[lookPaint[acSel]][2], 1);
+        if (i == HI_SMOKE) hud_rect(x + w - SZ(300), iy - SZ(16), SZ(18), SZ(18), SMOKE_RGB[lookSmoke[acSel]][0], SMOKE_RGB[lookSmoke[acSel]][1], SMOKE_RGB[lookSmoke[acSel]][2], 1);
+    }
+    hud_text(x + SZ(30), y + h - SZ(18), SZ(11), "LEFT RIGHT CHANGE   ESC BACK   RIGHT MOUSE TO LOOK AROUND", GREY, 1, 0);
+}
+enum { SI_ASSIST, SI_GUIDE, SI_IMAGERY, SI_DETAIL, SI_SCALE, SI_MSAA, SI_CLOUDS, SI_SHADOW, SI_VOLUME, SI_INVERT, SI_FULL, SI_OFFLINE, SI_BACK, SI_N };
 static void draw_settings(void) {
     draw_menu();
     float w = SZ(700), h = SZ(110) + SI_N * SZ(46), x = (W - w) / 2, y = (H - h) / 2;
@@ -896,6 +1082,9 @@ static void draw_settings(void) {
     for (int i = 0; i < SI_N; i++) {
         char v[64] = ""; const char *l = "";
         switch (i) {
+        case SI_ASSIST: l = "FLIGHT ASSISTS"; snprintf(v, sizeof v, assist ? "ON" : "OFF (RAW)"); break;
+        case SI_GUIDE: l = "APPROACH GUIDE"; snprintf(v, sizeof v, guide ? "ON" : "OFF"); break;
+        case SI_IMAGERY: l = "SATELLITE IMAGERY"; snprintf(v, sizeof v, "%s", PROV[provSel].name); break;
         case SI_DETAIL: l = "TERRAIN DETAIL"; snprintf(v, sizeof v, "%.2f", S.detail); break;
         case SI_SCALE: l = "RENDER SCALE"; snprintf(v, sizeof v, "%.0f%%", rc.scale * 100); break;
         case SI_MSAA: l = "ANTI-ALIASING"; snprintf(v, sizeof v, rc.msaa > 1 ? "%dX MSAA" : "OFF", rc.msaa); break;
@@ -913,7 +1102,7 @@ static void draw_settings(void) {
         hud_text(x + SZ(30), iy, SZ(16), l, WHITE, 1, 0);
         if (v[0]) hud_text(x + w - SZ(30), iy, SZ(15), v, WHITE, 1, 2);
     }
-    hud_text(x + SZ(30), y + h - SZ(16), SZ(10), "SCALE, MSAA AND SHADOWS APPLY ON RESTART. OFFLINE TAKES EFFECT ON RESTART.", GREY, 1, 0);
+    hud_text(x + SZ(30), y + h - SZ(16), SZ(10), "IMAGERY, SCALE, MSAA, SHADOWS AND OFFLINE APPLY ON RESTART. ESRI IMAGERY: PERSONAL, NON-COMMERCIAL USE.", GREY, 1, 0);
 }
 static char creditsText[6000];
 static void load_credits(void) {
@@ -1030,8 +1219,19 @@ static void flight_controls(float dt) {
     float elev = clampf(ctlElev + jp, -1, 1), ail = clampf(ctlAil + jr, -1, 1), rud = clampf(ctlRud + jy, -1, 1);
     /* throttle */
     float thrRate = 0.5f * dt;
-    if (k[SDL_SCANCODE_R] || k[SDL_SCANCODE_PAGEUP] || k[SDL_SCANCODE_EQUALS] || k[SDL_SCANCODE_KP_PLUS]) FL.throttle += thrRate;
-    if (k[SDL_SCANCODE_F] || k[SDL_SCANCODE_PAGEDOWN] || k[SDL_SCANCODE_MINUS] || k[SDL_SCANCODE_KP_MINUS]) FL.throttle -= thrRate;
+    bool thrUp = k[SDL_SCANCODE_R] || k[SDL_SCANCODE_PAGEUP] || k[SDL_SCANCODE_EQUALS] || k[SDL_SCANCODE_KP_PLUS];
+    bool thrDn = k[SDL_SCANCODE_F] || k[SDL_SCANCODE_PAGEDOWN] || k[SDL_SCANCODE_MINUS] || k[SDL_SCANCODE_KP_MINUS];
+    if (athr && !ap) {
+        /* autothrottle: the throttle keys move the target speed instead */
+        athrSpd = clampf(athrSpd + ((float)thrUp - (float)thrDn) * 8 * KT * dt * 2, flight_stall_speed(FL.def, FL.flaps) * 1.15f, FL.def->vne * 0.95f);
+        float acc = (FL.ias - prevIas) / fmaxf(dt, 1e-3f);
+        float top = FL.def->afterburner > 0 ? 0.9f : 1.0f;
+        FL.throttle = clampf(FL.throttle + ((athrSpd - FL.ias) * 0.035f - acc * 0.09f) * dt * 3, 0, top);
+        thrUp = thrDn = false;
+    }
+    prevIas = FL.ias;
+    if (thrUp) FL.throttle += thrRate;
+    if (thrDn) FL.throttle -= thrRate;
     if (pad) FL.throttle += (axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT) - axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT)) * thrRate;
     static float lastStickThr = -1;
     if (hasThr) {
@@ -1049,6 +1249,8 @@ static void flight_controls(float dt) {
     if (br && !(mod & KMOD_SHIFT)) parkBrake = false;
     if (parkBrake && FL.throttle > 0.45f) { parkBrake = false; say("PARKING BRAKE RELEASED"); }
     FL.brake = (br || parkBrake) ? 1.0f : 0.0f;
+    /* autobrake after an assisted landing, until walking pace */
+    if (assist && touchedDown && FL.onGround && FL.throttle < 0.15f && FL.gs > 12 * KT && !br) FL.brake = fmaxf(FL.brake, 0.55f);
     if (ap) {
         /* with the autopilot on, the controls nudge its targets */
         apAlt += -kp * 150 * dt * (k[SDL_SCANCODE_LSHIFT] ? 4 : 1);
@@ -1059,13 +1261,49 @@ static void flight_controls(float dt) {
         if (fabsf(jp) > 0.5f || fabsf(jr) > 0.5f) { ap = false; audio_event(3); say("AUTOPILOT OFF"); }
         else { autopilot(dt); return; }
     }
-    FL.elev = elev; FL.ail = ail; FL.rud = rud;
+    airTime = FL.onGround ? 0 : airTime + dt;
+    float pr = (FL.pitch - prevPitch) / fmaxf(dt, 1e-3f), brt = (FL.bank - prevBank) / fmaxf(dt, 1e-3f);
+    float yr = wrap180(FL.heading - yawPrev) / fmaxf(dt, 1e-3f); yawPrev = FL.heading;
+    if (!assist) { FL.elev = elev; FL.ail = ail; FL.rud = rud; return; }
+    if (FL.onGround || airTime < 0.8f) {
+        /* on the runway: direct pitch for the rotation, rudder steering with a yaw damper to keep it straight */
+        FL.elev = elev; FL.ail = clampf(ail - FL.bank * 0.03f, -1, 1);
+        FL.rud = clampf(rud - yr * 0.04f, -1, 1);
+        holdInit = false;
+        return;
+    }
+    /* in the air: fly-by-wire. Stick = pitch and roll rate, let go = the aeroplane holds its attitude */
+    float rin = clampf((float)kr + jr, -1, 1);
+    float pin = clampf(kp + jp, -1, 1);
+    if (!holdInit) { tgtPitch = FL.pitch; tgtBank = fabsf(FL.bank) < 5 ? 0 : FL.bank; eInt = FL.elev; bankHold = true; holdInit = true; }
+    bool heavy = FL.def->mass > 35000;
+    float maxQ = heavy ? 4.5f : 11, maxP = heavy ? 18 : (FL.def->jet ? 110 : 70);
+    tgtPitch = clampf(tgtPitch + pin * maxQ * dt, -22, 28);
+    tgtPitch = clampf(tgtPitch, FL.pitch - 6, FL.pitch + 6);
+    /* stall protection: never let the target pitch drag the speed below 1.2 Vs */
+    float vs = flight_stall_speed(FL.def, FL.flaps);
+    if (FL.ias < vs * 1.2f && pin >= 0) tgtPitch -= (vs * 1.2f - FL.ias) * 0.5f * dt * 4;
+    if (FL.aoa > FL.def->alpha_stall / DEG * 0.8f) tgtPitch -= 8 * dt;
+    float err = tgtPitch - FL.pitch;
+    eInt = clampf(eInt + err * 0.03f * dt, -1, 1);
+    FL.elev = clampf(err * 0.08f - pr * 0.035f + eInt, -1, 1);
+    FL.trim = 0;
+    if (fabsf(rin) > 0.05f) {
+        float cmd = rin * maxP;
+        if ((FL.bank > 67 && cmd > 0) || (FL.bank < -67 && cmd < 0)) cmd = 0;
+        FL.ail = clampf((cmd - brt) * 0.02f, -1, 1);
+        bankHold = false;
+    } else {
+        if (!bankHold) { tgtBank = fabsf(FL.bank) < 7 ? 0 : clampf(FL.bank, -67, 67); bankHold = true; }
+        FL.ail = clampf((tgtBank - FL.bank) * 0.045f - brt * 0.02f, -1, 1);
+    }
+    FL.rud = clampf(rud - FL.slip * 0.06f, -1, 1);   /* turn coordination */
 }
 
-static void cycle(int *v, int n, int d) { *v = ((*v + d) % n + n) % n; }
 static void menu_change(int item, int d) {
     switch (item) {
     case MI_AIRCRAFT: if (g_naircraft) { cycle(&acSel, g_naircraft, d); spawn(); } break;
+    case MI_HANGAR: cycle(&lookPaint[acSel], 12, d); apply_look(); break;
     case MI_AIRPORT: break;
     case MI_RUNWAY:
         if (aptSel >= 0 && g_airports[aptSel].nrw) {
@@ -1085,6 +1323,7 @@ static void menu_activate(int item) {
     switch (item) {
     case MI_FREE: chalActive = -1; start_flight(); break;
     case MI_CHAL: state = ST_CHAL; break;
+    case MI_HANGAR: state = ST_HANGAR; hangSel = 0; break;
     case MI_AIRPORT: state = ST_SEARCH; search[0] = 0; nSearch = 0; searchSel = 0; SDL_StartTextInput(); break;
     case MI_WIND: windDir = fmodf(windDir + 30, 360); break;
     case MI_SETTINGS: state = ST_SETTINGS; setSel = 0; break;
@@ -1095,6 +1334,9 @@ static void menu_activate(int item) {
 }
 static void settings_change(int d) {
     switch (setSel) {
+    case SI_ASSIST: assist = !assist; break;
+    case SI_GUIDE: guide = !guide; break;
+    case SI_IMAGERY: cycle(&provSel, 3, d ? d : 1); say("NEW IMAGERY LOADS AFTER A RESTART"); break;
     case SI_DETAIL: S.detail = clampf(S.detail + d * 0.25f, 0.5f, 2.5f); break;
     case SI_SCALE: rc.scale = clampf(rc.scale + d * 0.25f, 0.5f, 2.0f); break;
     case SI_MSAA: { static const int m[4] = {0, 2, 4, 8}; int i = 0; while (i < 3 && m[i] < rc.msaa) i++; cycle(&i, 4, d); rc.msaa = m[i]; break; }
@@ -1138,7 +1380,7 @@ static void handle_event(SDL_Event *e) {
         } else if (state != ST_FLY) {
             for (int i = 0; i < nItems; i++) if (hover(i)) {
                 if (state == ST_MENU) menuSel = i; else if (state == ST_SETTINGS) setSel = i; else if (state == ST_CHAL) chalSel = i;
-                else if (state == ST_SEARCH) searchSel = i; else if (state == ST_PAUSE) pauseSel = i;
+                else if (state == ST_SEARCH) searchSel = i; else if (state == ST_PAUSE) pauseSel = i; else if (state == ST_HANGAR) hangSel = i;
             }
         }
         return;
@@ -1150,6 +1392,7 @@ static void handle_event(SDL_Event *e) {
                 if (state == ST_MENU) { menuSel = i; menu_activate(i); }
                 else if (state == ST_SETTINGS) { setSel = i; settings_change(i == SI_BACK ? 0 : 1); }
                 else if (state == ST_CHAL) { chalSel = i; start_challenge(i); }
+                else if (state == ST_HANGAR) { hangSel = i; hangar_change(i == HI_BACK ? 0 : 1); }
                 else if (state == ST_SEARCH) { select_airport(searchRes[i], NULL); spawn(); SDL_StopTextInput(); state = ST_MENU; }
                 else if (state == ST_PAUSE) { pauseSel = i; SDL_Event k = {0}; k.type = SDL_KEYDOWN; k.key.keysym.sym = SDLK_RETURN; handle_event(&k); }
                 return;
@@ -1221,6 +1464,14 @@ static void handle_event(SDL_Event *e) {
     case ST_CREDITS:
         if (key == SDLK_ESCAPE || key == SDLK_RETURN) state = ST_MENU;
         break;
+    case ST_HANGAR:
+        if (key == SDLK_ESCAPE) state = ST_MENU;
+        else if (key == SDLK_UP) cycle(&hangSel, HI_N, -1);
+        else if (key == SDLK_DOWN) cycle(&hangSel, HI_N, 1);
+        else if (key == SDLK_LEFT) hangar_change(-1);
+        else if (key == SDLK_RIGHT) hangar_change(1);
+        else if (key == SDLK_RETURN || key == SDLK_KP_ENTER) hangar_change(hangSel == HI_BACK ? 0 : 1);
+        break;
     case ST_PAUSE:
         if (key == SDLK_ESCAPE) state = ST_FLY;
         else if (key == SDLK_UP) cycle(&pauseSel, 4, -1);
@@ -1242,7 +1493,12 @@ static void handle_event(SDL_Event *e) {
         else if (key == SDLK_v && FL.flapsSet < FL.def->flaps) { FL.flapsSet++; audio_event(0); }
         else if (key == SDLK_b && FL.flapsSet > 0) { FL.flapsSet--; audio_event(0); }
         else if (key == SDLK_SPACE && shift) { parkBrake = !parkBrake; say(parkBrake ? "PARKING BRAKE SET" : "PARKING BRAKE RELEASED"); }
+        else if (key == SDLK_z && shift) {
+            athr = !athr; if (athr) athrSpd = fmaxf(FL.ias, flight_stall_speed(FL.def, FL.flaps) * 1.3f);
+            say(athr ? "AUTOTHROTTLE ON - R/F SET THE SPEED" : "AUTOTHROTTLE OFF");
+        }
         else if (key == SDLK_z) ap_toggle();
+        else if (key == SDLK_x) { g_look.smokeOn = !g_look.smokeOn; audio_event(0); }
         else if (key == SDLK_c) { cycle(&camMode, NCAM, shift ? -1 : 1); flybyOk = false; towerTimer = 0; lookYaw = lookPitch = 0; }
         else if (key >= SDLK_F2 && key <= SDLK_F7) { camMode = key - SDLK_F2; flybyOk = false; towerTimer = 0; lookYaw = lookPitch = 0; }
         else if (key == SDLK_KP_5) { camYaw = 0; camPitch = 0.16f; camZoom = 1; lookYaw = lookPitch = 0; }
@@ -1254,8 +1510,8 @@ static void handle_event(SDL_Event *e) {
         else if (key == SDLK_TAB) { simRate = simRate >= 4 ? 1 : simRate * 2; }
         else if (key == SDLK_t) { utcHours += shift ? -0.25 : 0.25; }
         else if (key == SDLK_BACKQUOTE) FL.throttle = 0;
-        else if (key >= SDLK_1 && key <= SDLK_9 && !showMap) FL.throttle = (key - SDLK_0) * 0.1f;
-        else if (key == SDLK_0) FL.throttle = 1;
+        else if (key >= SDLK_1 && key <= SDLK_9 && !showMap) { FL.throttle = (key - SDLK_0) * 0.1f; athr = false; }
+        else if (key == SDLK_0) { FL.throttle = 1; athr = false; }
         else if ((key == SDLK_EQUALS || key == SDLK_KP_PLUS) && showMap) mapZoom = mapZoom < S.imagery_max_zoom ? mapZoom + 1 : mapZoom;
         else if ((key == SDLK_MINUS || key == SDLK_KP_MINUS) && showMap) mapZoom = mapZoom > 5 ? mapZoom - 1 : mapZoom;
         else if (key == SDLK_r && (FL.crashed || scored)) { if (chalActive >= 0) start_challenge(chalActive); else start_flight(); }
@@ -1341,6 +1597,7 @@ int main(int argc, char **argv) {
     settings_load();
     const char *shot = NULL, *argAirport = NULL, *argRunway = NULL, *argAircraft = NULL;
     int maxFrames = 900, argChallenge = -1, argCam = -1;
+    float argThrottle = -1;
     bool fly = false, testFlight = false, forceWindowed = false;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *n = i + 1 < argc ? argv[i + 1] : NULL;
@@ -1357,7 +1614,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--wind") && n) { sscanf(n, "%f/%f", &windDir, &windKt); i++; }
         else if (!strcmp(a, "--cam") && n) { argCam = atoi(n) % NCAM; i++; }
         else if (!strcmp(a, "--view") && n) { sscanf(n, "%f,%f,%f", &camYaw, &camPitch, &camZoom); camYaw *= DEG; camPitch *= DEG; i++; }
-        else if (!strcmp(a, "--offline")) S.offline = true;
+        else if (!strcmp(a, "--offline")) { S.offline = true; cliOffline = true; }
         else if (!strcmp(a, "--windowed")) { fullscreen = false; forceWindowed = true; }
         else if (!strcmp(a, "--fullscreen")) fullscreen = true;
         else if (!strcmp(a, "--size") && n) { sscanf(n, "%dx%d", &rc.w, &rc.h); i++; }
@@ -1365,9 +1622,13 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--shot") && n) { shot = n; i++; }
         else if (!strcmp(a, "--frames") && n) { maxFrames = atoi(n); i++; }
         else if (!strcmp(a, "--test-flight")) testFlight = true;
+        else if (!strcmp(a, "--throttle") && n) { argThrottle = (float)atof(n); i++; }
         else { fprintf(stderr, "wingmere: unknown option %s (try --help)\n", a); return 1; }
     }
     if (shot || testFlight) { fullscreen = false; forceWindowed = true; }
+    snprintf(S.imagery_url, sizeof S.imagery_url, "%s", customImagery[0] ? customImagery : PROV[provSel].url);
+    if (!customImagery[0]) S.imagery_max_zoom = PROV[provSel].maxz;
+    S.pave = provSel == 1 ? 0.85f : 0.3f;     /* 10 m imagery needs the painted pavement; sharp imagery already shows it */
     (void)forceWindowed;
     find_data();
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0) { fprintf(stderr, "wingmere: SDL: %s\n", SDL_GetError()); return 1; }
@@ -1397,6 +1658,10 @@ int main(int argc, char **argv) {
     fprintf(stderr, "wingmere: %d airports, %d runways, %d aircraft\n", g_nairports, g_nrunways, g_naircraft);
     load_credits();
     scores_load();
+    for (int i = 0; i < nLookCfg; i++) {
+        char id[40]; int p0, f0, s0;
+        if (sscanf(lookCfg[i], "%39s %d %d %d", id, &p0, &f0, &s0) == 4) { int a = aircraft_by_id(id); if (a >= 0) { lookPaint[a] = p0 % 12; lookFinish[a] = f0 % 5; lookSmoke[a] = s0 % 6; } }
+    }
     int ai = argAircraft ? aircraft_by_id(argAircraft) : aircraft_by_id(cfgAircraft);
     acSel = ai >= 0 ? ai : (aircraft_by_id("corsair") >= 0 ? aircraft_by_id("corsair") : 0);
     int api = airport_find(argAirport ? argAirport : cfgAirport);
@@ -1424,6 +1689,7 @@ int main(int argc, char **argv) {
     else if (fly) { chalActive = -1; start_flight(); }
     if (argCam >= 0) camMode = argCam; else if (state == ST_LOADING) camMode = CAM_CHASE;
     if (shot && state == ST_LOADING) { state = ST_FLY; paused = true; freezeShot = true; }
+    if (argThrottle >= 0) { FL.throttle = argThrottle; athr = false; FL.ab = FL.def->afterburner > 0 && argThrottle > 0.9f ? (argThrottle - 0.9f) / 0.1f : 0; }
 
     Uint64 last = SDL_GetPerformanceCounter();
     int frame = 0, quietFrames = 0;
@@ -1437,7 +1703,7 @@ int main(int argc, char **argv) {
         dt = clampf(dt, 0.0001f, 0.05f);
         fps = fps * 0.95f + 0.05f / dt;
         realTime += dt;
-        msgTimer -= dt; tdTimer -= dt;
+        msgTimer -= dt; tdTimer -= dt; reviewTimer -= dt;
         tiles_frame();
         dw = 0; SDL_GL_GetDrawableSize(win, &dw, &dh);
         W = (float)dw; H = (float)dh; s_ = H / 1080.0f;
@@ -1457,6 +1723,7 @@ int main(int argc, char **argv) {
             if (FL.touchdowns > lastTouchdowns) { lastTouchdowns = FL.touchdowns; on_touchdown(); }
             if (ap && (FL.onGround || FL.crashed)) { ap = false; audio_event(3); }
             if ((frame & 15) == 0) find_approach();
+            passengers(sdt);
             evaluate_landing();
         } else if (!flying && state != ST_LOADING) {
             FL.throttle = 0; FL.brake = 1;
@@ -1486,6 +1753,7 @@ int main(int argc, char **argv) {
         else if (state == ST_CHAL) draw_challenges();
         else if (state == ST_SETTINGS) draw_settings();
         else if (state == ST_CREDITS) draw_credits();
+        else if (state == ST_HANGAR) draw_hangar();
         else if (state == ST_LOADING) draw_loading();
         if (msgTimer > 0) hud_text(W / 2, H * 0.17f, SZ(16), msg, WHITE, fminf(msgTimer, 1), 1);
         attribution(state == ST_FLY ? 0.45f : 0.7f);
@@ -1496,6 +1764,7 @@ int main(int argc, char **argv) {
             quietFrames = (q + b == 0) ? quietFrames + 1 : 0;
             if ((frame > 120 && quietFrames > 45) || frame >= maxFrames) {
                 render_screenshot(shot);
+                if (getenv("WINGMERE_DEBUG")) { double la, lo, h; ecef_to_geo(cam.pos, &la, &lo, &h); fprintf(stderr, "debug: plane alt %.1f agl %.1f  cam alt %.1f ground %.1f  fov %.2f  fwd %.2f %.2f %.2f\n", FL.alt, FL.agl, h, terrain_height(la, lo, NULL, NULL), cam.fov, cam.fwd.x, cam.fwd.y, cam.fwd.z); }
                 fprintf(stderr, "wingmere: wrote %s after %d frames\n", shot, frame);
                 running = false;
             }

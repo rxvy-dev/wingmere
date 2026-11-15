@@ -22,7 +22,10 @@ GLuint g_progHud, g_progMap;
 static RenderCfg cfg;
 static int rw, rh, cw, ch;
 static char *src;
-static GLuint pTerrain, pRunway, pPlane, pShadow, pSkyBake, pSky, pPart, pDown, pUp, pClouds, pComp;
+static GLuint pTerrain, pRunway, pPlane, pShadow, pSkyBake, pSky, pPart, pDown, pUp, pClouds, pComp, pFlame, pBuild;
+Look g_look = {{1, 1, 1}, 0, 0, {1, 1, 1}, false};
+static GLuint flameVao, sphereVao, boxVao; static int flameN, sphereN, boxN;
+static void make_meshes(void);
 static GLuint texDetail, texNoise3, texSky, skyFbo, fsVao;
 enum { SKY_RES = 256 };
 static GLuint fboMS, rbColor, rbDepth, fboScene, texScene, texDepth, fboCloud, texCloud;
@@ -104,6 +107,8 @@ static void load_programs(void) {
     pUp = program("fs.vert", "up.frag");
     pClouds = program("fs.vert", "common+clouds.frag");
     pComp = program("fs.vert", "composite.frag");
+    pFlame = program("flame.vert", "common+flame.frag");
+    pBuild = program("building.vert", "common+building.frag");
     g_progHud = program("hud.vert", "hud.frag");
     g_progMap = program("map.vert", "map.frag");
 }
@@ -329,12 +334,126 @@ bool render_init(RenderCfg c) {
     partCap = 6 * 16384;
     partBuf = malloc(sizeof(float) * 9 * partCap);
     uFCv = 1.0f / log2f(FAR + 1.0f);
+    make_meshes();
     make_targets();
     hud_init();
     return true;
 }
 void render_resize(int w, int h) { if (w < 1 || h < 1) return; g_w = w; g_h = h; make_targets(); }
 void render_reload_shaders(void) { load_programs(); skyDirty = true; }
+
+/* ------------------------------------------------------------------ small built-in meshes: plume, crew */
+static GLuint mesh_vao(const float *v, int n, int stride, const int *sizes, int nattr) {
+    GLuint vao, vbo; glGenVertexArrays(1, &vao); glBindVertexArray(vao);
+    glGenBuffers(1, &vbo); glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * stride * n, v, GL_STATIC_DRAW);
+    int off = 0;
+    for (int i = 0; i < nattr; i++) { glEnableVertexAttribArray(i); glVertexAttribPointer(i, sizes[i], GL_FLOAT, GL_FALSE, stride * 4, (void *)(intptr_t)(off * 4)); off += sizes[i]; }
+    return vao;
+}
+static void make_meshes(void) {
+    enum { RT = 28, RA = 24 };
+    static float fl[RT * RA * 6 * 2];
+    int n = 0;
+    for (int i = 0; i < RT; i++)
+        for (int j = 0; j < RA; j++) {
+            float t0 = (float)i / RT, t1 = (float)(i + 1) / RT, a0 = 2 * PI * j / RA, a1 = 2 * PI * (j + 1) / RA;
+            float q[6][2] = {{t0, a0}, {t1, a0}, {t1, a1}, {t0, a0}, {t1, a1}, {t0, a1}};
+            for (int k = 0; k < 6; k++) { fl[n * 2] = q[k][0]; fl[n * 2 + 1] = q[k][1]; n++; }
+        }
+    int s2[1] = {2}; flameVao = mesh_vao(fl, n, 2, s2, 1); flameN = n;
+    /* unit sphere and unit cube in the aircraft vertex layout (pos, normal, uv) */
+    enum { SU = 16, SV = 12 };
+    static float sp[SU * SV * 6 * 8];
+    n = 0;
+    for (int i = 0; i < SV; i++)
+        for (int j = 0; j < SU; j++) {
+            float v0 = PI * i / SV, v1 = PI * (i + 1) / SV, u0 = 2 * PI * j / SU, u1 = 2 * PI * (j + 1) / SU;
+            float q[6][2] = {{v0, u0}, {v1, u0}, {v1, u1}, {v0, u0}, {v1, u1}, {v0, u1}};
+            for (int k = 0; k < 6; k++) {
+                float x = sinf(q[k][0]) * cosf(q[k][1]), y = cosf(q[k][0]), z = sinf(q[k][0]) * sinf(q[k][1]);
+                float *o = &sp[n * 8]; o[0] = x; o[1] = y; o[2] = z; o[3] = x; o[4] = y; o[5] = z; o[6] = o[7] = 0; n++;
+            }
+        }
+    int s8[3] = {3, 3, 2}; sphereVao = mesh_vao(sp, n, 8, s8, 3); sphereN = n;
+    static float bx[36 * 8];
+    static const float F[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+    n = 0;
+    for (int f = 0; f < 6; f++) {
+        v3 N = V(F[f][0], F[f][1], F[f][2]), A = fabsf(N.y) > 0.5f ? V(1, 0, 0) : V(0, 1, 0), B = vcross(N, A);
+        float q[6][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, -1}, {1, 1}, {-1, 1}};
+        for (int k = 0; k < 6; k++) {
+            v3 p = vadd(vmul(N, 0.5f), vadd(vmul(A, q[k][0] * 0.5f), vmul(B, q[k][1] * 0.5f)));
+            float *o = &bx[n * 8]; o[0] = p.x; o[1] = p.y; o[2] = p.z; o[3] = N.x; o[4] = N.y; o[5] = N.z; o[6] = o[7] = 0; n++;
+        }
+    }
+    boxVao = mesh_vao(bx, n, 8, s8, 3); boxN = n;
+}
+static void solid(GLuint vao, int n, m4 m, float r, float g, float b, float a, float metal, float rough, bool glass) {
+    glUniformMatrix4fv(glGetUniformLocation(pPlane, "uModel"), 1, GL_FALSE, m.m);
+    glUniform4f(glGetUniformLocation(pPlane, "uColor"), r, g, b, a);
+    glUniform3f(glGetUniformLocation(pPlane, "uMatParams"), metal, rough, glass ? 1.0f : 0.0f);
+    glUniform3f(glGetUniformLocation(pPlane, "uHasTex"), 0, 0, 0);
+    glUniform1f(glGetUniformLocation(pPlane, "uPaintMask"), 0);
+    glBindVertexArray(vao); glDrawArrays(GL_TRIANGLES, 0, n);
+}
+static m4 scaled(m4 base, v3 pos, quat q, v3 sc) {
+    m4 t = m4_trs(pos, q, 1);
+    m4 s = m4_ident(); s.m[0] = sc.x; s.m[5] = sc.y; s.m[10] = sc.z;
+    return m4_mul(base, m4_mul(t, s));
+}
+/* the crew: a flight suit, a helmet (or a leather cap and goggles in the old planes) and a head that looks around */
+static void draw_crew(const Flight *fl, m4 model, float t) {
+    const AircraftDef *a = fl->def;
+    for (int i = 0; i < a->npilot; i++) {
+        v3 h = a->pilot[i];
+        float yaw = 0.35f * sinf(t * 0.23f + i * 2.1f) + 0.25f * sinf(t * 0.61f + i) - clampf(fl->bank / 90, -0.6f, 0.6f) * 0.6f;
+        float pitch = 0.12f * sinf(t * 0.37f + i * 1.3f);
+        quat hq = q_mul(q_axis(V(0, 1, 0), yaw), q_axis(V(1, 0, 0), pitch));
+        bool jet = a->jet;
+        /* torso and shoulders */
+        solid(boxVao, boxN, scaled(model, vadd(h, V(0, -0.42f, -0.04f)), q_ident(), V(0.46f, 0.5f, 0.27f)), jet ? 0.16f : 0.27f, jet ? 0.19f : 0.17f, jet ? 0.12f : 0.1f, 1, 0, 0.8f, false);
+        solid(sphereVao, sphereN, scaled(model, vadd(h, V(0, -0.16f, -0.02f)), q_ident(), V(0.07f, 0.06f, 0.07f)), 0.75f, 0.55f, 0.45f, 1, 0, 0.6f, false);
+        m4 head = m4_mul(model, m4_trs(h, hq, 1));
+        if (jet) {
+            solid(sphereVao, sphereN, scaled(head, V(0, 0.01f, -0.01f), q_ident(), V(0.145f, 0.15f, 0.16f)), 0.85f, 0.85f, 0.82f, 1, 0.1f, 0.35f, false);
+            solid(sphereVao, sphereN, scaled(head, V(0, -0.01f, 0.06f), q_ident(), V(0.125f, 0.09f, 0.11f)), 0.02f, 0.02f, 0.03f, 1, 0.6f, 0.05f, false);
+            solid(boxVao, boxN, scaled(head, V(0, -0.1f, 0.1f), q_ident(), V(0.08f, 0.07f, 0.08f)), 0.12f, 0.13f, 0.12f, 1, 0, 0.6f, false);
+        } else {
+            solid(sphereVao, sphereN, scaled(head, V(0, 0, 0), q_ident(), V(0.11f, 0.13f, 0.12f)), 0.78f, 0.58f, 0.46f, 1, 0, 0.6f, false);
+            solid(sphereVao, sphereN, scaled(head, V(0, 0.035f, -0.01f), q_ident(), V(0.118f, 0.11f, 0.13f)), 0.3f, 0.18f, 0.09f, 1, 0, 0.7f, false);
+            for (int e = -1; e <= 1; e += 2) solid(sphereVao, sphereN, scaled(head, V(e * 0.042f, 0.035f, 0.1f), q_ident(), V(0.032f, 0.03f, 0.02f)), 0.05f, 0.08f, 0.09f, 1, 0.5f, 0.1f, false);
+            solid(boxVao, boxN, scaled(model, vadd(h, V(0.06f, -0.17f, -0.1f)), q_axis(V(0, 1, 0), sinf(t * 7) * 0.2f), V(0.08f, 0.04f, 0.3f)), 0.92f, 0.9f, 0.86f, 1, 0, 0.9f, false);
+        }
+    }
+}
+static const Flight *flameFl; static m4 flameModel;
+static void draw_flames(float t) {
+    const Flight *fl = flameFl;
+    if (!fl || fl->ab < 0.02f || fl->crashed) return;
+    const AircraftDef *a = fl->def;
+    glUseProgram(pFlame);
+    glUniform1f(glGetUniformLocation(pFlame, "uTime"), t);
+    glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE);
+    glBindVertexArray(flameVao);
+    for (int i = 0; i < a->nnozzle; i++) {
+        float R = a->nozzleR[i] * 0.92f;
+        m4 m = m4_mul(flameModel, m4_trs(a->nozzle[i], q_ident(), 1));
+        glUniformMatrix4fv(glGetUniformLocation(pFlame, "uModel"), 1, GL_FALSE, m.m);
+        /* outer orange plume, then a white-hot core with the diamonds */
+        float layers[2][8] = {{R * 1.05f, R * (7 + 5 * fl->ab), 0, 1.0f, 1.0f, 0.55f, 0.2f, 0.9f}, {R * 0.62f, R * (3.5f + 2.5f * fl->ab), 1, 1.6f, 0.75f, 0.8f, 1.0f, 1.0f}};
+        for (int L = 0; L < 2; L++) {
+            float *q = layers[L];
+            glUniform1f(glGetUniformLocation(pFlame, "uRad"), q[0]); glUniform1f(glGetUniformLocation(pFlame, "uLen"), q[1]);
+            glUniform1f(glGetUniformLocation(pFlame, "uShape"), q[2]);
+            glUniform1f(glGetUniformLocation(pFlame, "uPower"), q[3] * fl->ab);
+            glUniform3f(glGetUniformLocation(pFlame, "uCore"), q[4], q[5], q[6]);
+            glUniform3f(glGetUniformLocation(pFlame, "uTail"), 1.0f, 0.32f, 0.06f);
+            glDrawArrays(GL_TRIANGLES, 0, flameN);
+        }
+    }
+    glDepthMask(GL_TRUE);
+}
 
 /* ------------------------------------------------------------------ effects */
 typedef struct { d3 pos; v3 vel; float size, grow, life, maxLife, c[4]; } Particle;
@@ -565,6 +684,27 @@ static void aircraft_fx(const Flight *fl, float dt, float t) {
         (void)dt;
         return;
     }
+    /* afterburner glow, and airshow smoke */
+    for (int i = 0; i < a->nnozzle && fl->ab > 0.05f; i++)
+        fx_light(dadd(fl->pos, f2d(q_rot(fl->rot, vadd(a->nozzle[i], V(0, 0, -a->nozzleR[i] * 1.5f))))), a->nozzleR[i] * 2.2f, 1.0f, 0.55f, 0.2f, 1.2f * fl->ab);
+    static d3 lastSmoke[4]; static bool haveSmoke;
+    if (g_look.smokeOn && fl->gs > 15) {
+        int ns = a->nnozzle ? a->nnozzle : 1;
+        for (int e = 0; e < ns; e++) {
+            v3 src = a->nnozzle ? vadd(a->nozzle[e], V(0, 0, -a->nozzleR[e])) : V(0, a->bmin.y * 0.3f, a->bmin.z);
+            d3 p = dadd(fl->pos, f2d(q_rot(fl->rot, src)));
+            if (haveSmoke) {
+                float d = (float)dlen(dsub(p, lastSmoke[e]));
+                int n = (int)(d / 2.5f) + 1; if (n > 16) n = 16;
+                for (int k = 0; k < n; k++) {
+                    d3 q = dadd(lastSmoke[e], dmul(dsub(p, lastSmoke[e]), (k + frand()) / n));
+                    fx_emit(q, V(frand() - 0.5f, frand() - 0.5f, frand() - 0.5f), 0.9f, 2.4f, 9 + 3 * frand(), g_look.smokeCol[0], g_look.smokeCol[1], g_look.smokeCol[2], 0.55f);
+                }
+            }
+            lastSmoke[e] = p;
+        }
+        haveSmoke = true;
+    } else haveSmoke = false;
     /* navigation lights, beacon and strobes */
     m4 R = m4_trs(V(0, 0, 0), fl->rot, 1);
     float night = 1 - lightLevel;
@@ -640,6 +780,7 @@ void render_frame(const Camera *cam, const Flight *fl, float dt, bool drawAircra
     fx_update(dt);
     if (fl) aircraft_fx(fl, dt, t);
     runway_lights(cam->pos, t);
+    terrain_lights(cam->pos, 1 - lightLevel);
     v3 camPosF = d2f(cam->pos);
 
     /* 1. aircraft shadow */
@@ -683,8 +824,15 @@ void render_frame(const Camera *cam, const Flight *fl, float dt, bool drawAircra
     ui(pTerrain, "uImg", 2);
     d3 cm = D(fmod(cam->pos.x, 1000.0), fmod(cam->pos.y, 1000.0), fmod(cam->pos.z, 1000.0));
     u3(pTerrain, "uCamMod", d2f(cm));
+    u1(pTerrain, "uPave", S.pave);
     glActiveTexture(GL_TEXTURE2);
     terrain_draw(pTerrain, cam->pos);
+    /* OpenStreetMap buildings and taxiway paint */
+    if (S.buildings) {
+        glUseProgram(pBuild); set_common(pBuild, camPosF, alt, sunDir, sunCol);
+        terrain_draw_city(pBuild, cam->pos, 14000, 0);
+        terrain_draw_city(pBuild, cam->pos, 6000, 1);
+    }
     /* runways */
     glUseProgram(pRunway); set_common(pRunway, camPosF, alt, sunDir, sunCol);
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -704,7 +852,16 @@ void render_frame(const Camera *cam, const Flight *fl, float dt, bool drawAircra
         glUseProgram(pPlane); set_common(pPlane, camPosF, alt, sunDir, sunCol);
         ui(pPlane, "uTexColor", 4); ui(pPlane, "uTexNormal", 5); ui(pPlane, "uTexRough", 6);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        static const float FIN[5][2] = {{0, 0}, {0.0f, 0.85f}, {0.05f, 0.14f}, {1.0f, 0.07f}, {0.75f, 0.32f}};
+        glUniform4f(U(pPlane, "uPaint"), g_look.paint[0], g_look.paint[1], g_look.paint[2], g_look.amount);
+        glUniform3f(U(pPlane, "uFinish"), FIN[g_look.finish % 5][0], FIN[g_look.finish % 5][1], g_look.finish ? 1.0f : 0.0f);
         aircraft_draw(pPlane, fl->def, model, fl->propAngle, fl->gearDown, false);
+        glUniform4f(U(pPlane, "uPaint"), 0, 0, 0, 0); glUniform3f(U(pPlane, "uFinish"), 0, 0, 0);
+        if (!fl->crashed) draw_crew(fl, model, t);
+        flameFl = fl; flameModel = model;
+        glUseProgram(pFlame); set_common(pFlame, camPosF, alt, sunDir, sunCol);
+        draw_flames(t);
+        glEnable(GL_BLEND);
     }
     /* smoke, contrails and lights */
     partN = 0;

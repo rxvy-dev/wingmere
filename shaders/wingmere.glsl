@@ -56,23 +56,23 @@ layout(location = 2) in vec2 aUV;
 layout(location = 3) in float aH;
 uniform mat4 uVP;
 uniform vec3 uOffset;
-uniform vec4 uImgST;
+uniform vec4 uImgST, uMaskST;
 out vec3 vRel, vN;
-out vec2 vUV;
+out vec2 vUV, vMUV;
 out float vH, vW;
 void main() {
     vRel = aPos + uOffset;
-    vN = aNrm; vUV = aUV * uImgST.xy + uImgST.zw; vH = aH;
+    vN = aNrm; vUV = aUV * uImgST.xy + uImgST.zw; vMUV = aUV * uMaskST.xy + uMaskST.zw; vH = aH;
     gl_Position = uVP * vec4(vRel, 1.0);
     vW = 1.0 + gl_Position.w;
 }
 
 //@ terrain.frag
 in vec3 vRel, vN;
-in vec2 vUV;
+in vec2 vUV, vMUV;
 in float vH, vW;
-uniform sampler2D uImg, uDetail;
-uniform float uHasImg;
+uniform sampler2D uImg, uDetail, uMask;
+uniform float uHasImg, uHasMask, uPave;
 uniform vec3 uCamMod;
 out vec4 fragColor;
 void main() {
@@ -97,8 +97,22 @@ void main() {
     }
     // water: sea level, or dark blue-green flat imagery
     float lum = dot(alb, vec3(0.3, 0.6, 0.1));
-    float lake = step(alb.r * 1.15, alb.b) * step(lum, 0.06) * step(0.97, dot(N, upL));
-    float water = max(step(vH, 0.3), lake * 0.85);
+    float water;
+    vec4 mk = vec4(0.0, 0.0, 1.0, 0.0);
+    if (uHasMask > 0.5) {
+        // OpenStreetMap: exact coastlines, lakes and rivers; aprons and taxiways; roads
+        mk = texture(uMask, vMUV);
+        water = smoothstep(0.3, 0.7, mk.r);
+        float pave = mk.g * uPave * (1.0 - water);
+        if (pave > 0.0) {
+            float g1 = texture(uDetail, q / 62.5).r, g2 = texture(uDetail, q / 7.8125).r;
+            vec3 conc = vec3(0.16, 0.155, 0.145) * (0.8 + 0.4 * g1) * (0.92 + 0.16 * g2);
+            alb = mix(alb, conc, pave);
+        }
+    } else {
+        float lake = step(alb.r * 1.15, alb.b) * step(lum, 0.06) * step(0.97, dot(N, upL));
+        water = max(step(vH, 0.3), lake * 0.85);
+    }
     vec3 L = uSunDir, Vv = -vRel / max(dist, 1e-3);
     float ndl = max(dot(N, L), 0.0), fdl = max(dot(upL, L), 0.0);
     float relief = clamp((ndl + 0.04) / (fdl + 0.04), 0.25, 1.9);   // imagery already holds the flat-ground shading
@@ -112,8 +126,14 @@ void main() {
         float glint = D_GGX(max(dot(upL, H), 0.0), 0.12) * 0.25 * fdl * sh;
         col = mix(col, col * 0.6 + refl + uSunCol * glint * fres * 4.0, water * 0.85);
     }
-    // at night, grey built-up areas in the imagery glow with street lights
-    if (uNight > 0.05 && uHasImg > 0.5 && water < 0.5) {
+    // at night the roads glow with street lights...
+    if (uNight > 0.05 && uHasMask > 0.5) {
+        float sl = smoothstep(0.62, 0.9, texture(uDetail, q / 31.25).g) * 0.7 + 0.3;
+        col += vec3(1.0, 0.6, 0.28) * mk.a * sl * uNight * uBoost * 0.32 * (1.0 - fogAmount(dist, uCamAlt, vH)) * (1.0 - water);
+        col += vec3(0.9, 0.85, 0.7) * mk.g * uNight * uBoost * 0.05 * (1.0 - water);   // floodlit aprons
+    }
+    // ...and without map data, grey built-up areas in the imagery do
+    if (uNight > 0.05 && uHasImg > 0.5 && water < 0.5 && uHasMask < 0.5) {
         float mx = max(alb.r, max(alb.g, alb.b)), mn = min(alb.r, min(alb.g, alb.b));
         float urban = smoothstep(0.045, 0.012, mx - mn) * smoothstep(0.035, 0.09, lum) * smoothstep(0.45, 0.3, lum);
         vec3 aw = abs(upL);
@@ -234,15 +254,26 @@ in float vW;
 uniform sampler2D uTexColor, uTexNormal, uTexRough;
 uniform vec4 uColor;
 uniform vec3 uMatParams, uHasTex;     // metal, rough, glass / has colour, normal, rough maps
+uniform vec4 uPaint;                  // hangar paint colour + amount
+uniform vec3 uFinish;                 // metal, rough, enabled
+uniform float uPaintMask;
 out vec4 fragColor;
 void main() {
-    vec3 Ng = normalize(vN);
     vec3 Vv = normalize(-vRel);
+    vec3 Ng = dot(vN, vN) > 1e-12 ? normalize(vN) : Vv;   // some models carry zero-length normals
     if (dot(Ng, Vv) < 0.0) Ng = -Ng;
     vec4 base = uColor;
     if (uHasTex.x > 0.5) base *= texture(uTexColor, vUV);
     float rough = uMatParams.y, metal = uMatParams.x;
     if (uHasTex.z > 0.5) rough = clamp(texture(uTexRough, vUV).r, 0.04, 1.0);
+    if (uPaintMask > 0.5 && uMatParams.z < 0.5) {
+        if (uPaint.a > 0.0) {   // repaint, keeping the panel lines, decals and dirt of the original
+            float l = dot(base.rgb, vec3(0.3, 0.59, 0.11));
+            vec3 pc = uPaint.rgb * (0.3 + 1.4 * l);
+            base.rgb = mix(base.rgb, pc, uPaint.a * smoothstep(0.015, 0.08, l));
+        }
+        if (uFinish.z > 0.5) { metal = uFinish.x; rough = uFinish.y; }
+    }
     vec3 N = Ng;
     if (uHasTex.y > 0.5) {               // tangent frame from screen-space derivatives: no tangents needed
         vec3 dp1 = dFdx(vRel), dp2 = dFdy(vRel);
@@ -269,8 +300,108 @@ void main() {
     float alpha = 1.0;
     if (uMatParams.z > 0.5) { alpha = clamp(base.a + Fr.r * 0.7, 0.25, 0.95); col = env * Fr * 1.2 + base.rgb * irr * 0.3; }
     col = applyFog(col, vRel, length(vRel), uCamAlt + dot(vRel, uU));
+    if (any(isnan(col)) || any(isinf(col))) col = vec3(0.0);
+    col = min(col, vec3(60000.0));
     fragColor = vec4(col * alpha, alpha);
     gl_FragDepth = log2(vW) * uFC;
+}
+
+//@ flame.vert
+// afterburner plume: a cone of rings behind the nozzle, along -Z of the nozzle frame
+layout(location = 0) in vec2 aTA;          // t along the plume 0..1, angle round it
+uniform mat4 uModel, uVP;
+uniform float uLen, uRad, uTime, uShape;
+out float vT, vA, vW;
+out vec3 vRel, vN;
+void main() {
+    float t = aTA.x, a = aTA.y;
+    float r = uRad * mix(1.0 - 0.8 * t * t, 1.0 - 0.95 * t, uShape) * (1.0 + 0.06 * sin(t * 37.0 - uTime * 41.0));
+    vec3 p = vec3(cos(a) * r, sin(a) * r, -t * uLen);
+    vec4 w = uModel * vec4(p, 1.0);
+    vRel = w.xyz; vN = mat3(uModel) * vec3(cos(a), sin(a), 0.25);
+    vT = t; vA = a;
+    gl_Position = uVP * w;
+    vW = 1.0 + gl_Position.w;
+}
+
+//@ flame.frag
+in float vT, vA, vW;
+in vec3 vRel, vN;
+uniform float uTime, uPower;
+uniform vec3 uCore, uTail;
+out vec4 fragColor;
+void main() {
+    vec3 V = normalize(-vRel);
+    float facing = abs(dot(normalize(vN), V));            // the middle of the plume reads as thicker
+    float t = vT;
+    float diamonds = 0.5 + 0.5 * cos(t * 6.2832 * 4.5 - 0.6);   // shock diamonds
+    float flick = 0.82 + 0.18 * sin(uTime * 53.0 + t * 23.0) * sin(uTime * 37.0 + vA * 3.0);
+    float fade = smoothstep(1.0, 0.2, t) * smoothstep(0.0, 0.04, t);
+    vec3 col = mix(uCore, uTail, smoothstep(0.0, 0.75, t)) * mix(1.0, 0.35 + diamonds, 0.7 * (1.0 - t));
+    float a = pow(facing, 1.3) * fade * flick * uPower;
+    fragColor = vec4(col * a * uBoost, 0.0);
+    gl_FragDepth = log2(vW) * uFC - 1e-6;
+}
+
+//@ building.vert
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNrm;
+layout(location = 2) in vec2 aUV;      // walls: metres along / up; roofs: metres east / north
+layout(location = 3) in vec2 aKind;    // 0 wall, 1 roof, 2 paint; a per-building random number
+uniform vec3 uOffset;
+uniform mat4 uVP;
+out vec3 vRel, vN;
+out vec2 vUV, vKind;
+out float vW;
+void main() {
+    vRel = aPos + uOffset; vN = aNrm; vUV = aUV; vKind = aKind;
+    gl_Position = uVP * vec4(vRel, 1.0);
+    vW = 1.0 + gl_Position.w;
+}
+
+//@ building.frag
+in vec3 vRel, vN;
+in vec2 vUV, vKind;
+in float vW;
+uniform sampler2D uDetail;
+out vec4 fragColor;
+float h1(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+void main() {
+    float dist = length(vRel);
+    vec3 N = normalize(vN), Vv = -vRel / max(dist, 1e-3);
+    vec3 upL = normalize(uCamPosF + vRel);
+    float hash = vKind.y;
+    vec3 alb; float glass = 0.0, lit = 0.0;
+    if (vKind.x > 1.5) {                                   // taxiway centreline paint
+        alb = vec3(0.62, 0.46, 0.05);
+    } else if (vKind.x > 0.5) {                            // roof
+        float n = texture(uDetail, vUV / 37.0).r;
+        alb = mix(vec3(0.21, 0.2, 0.19), vec3(0.35, 0.3, 0.27), step(0.6, hash)) * (0.8 + 0.4 * n);
+    } else {                                               // facade: a palette, floors and windows
+        vec3 pal[6] = vec3[6](vec3(0.42, 0.4, 0.37), vec3(0.36, 0.22, 0.17), vec3(0.55, 0.53, 0.5), vec3(0.2, 0.24, 0.28), vec3(0.47, 0.42, 0.33), vec3(0.3, 0.31, 0.32));
+        alb = pal[int(hash * 5.99)];
+        float fl = vUV.y / 3.4, bay = vUV.x / 3.1;
+        vec2 cell = fract(vec2(bay, fl));
+        float win = step(0.16, cell.x) * step(cell.x, 0.84) * step(0.28, cell.y) * step(cell.y, 0.86) * step(0.8, vUV.y);
+        float glassy = step(0.8, hash);                    // a fifth of buildings are glass towers
+        glass = max(win, glassy * step(0.0, vUV.y) * 0.85);
+        float wf = 1.0 - smoothstep(300.0, 2500.0, dist);  // windows melt into the wall far away
+        glass *= mix(0.45, 1.0, wf);
+        alb = mix(alb, vec3(0.05, 0.06, 0.07), glass * 0.85);
+        lit = step(0.55, h1(floor(vec2(bay, fl)) + hash * 91.0)) * win;
+    }
+    float fdl = max(dot(upL, uSunDir), 0.0);
+    float ndl = max(dot(N, uSunDir), 0.0);
+    vec3 col = alb / PI * uSunCol * ndl + alb * textureLod(uSky, normalize(toEnu(N)), 7.0).rgb * (0.65 + 0.35 * dot(N, upL));
+    if (glass > 0.0) {
+        vec3 R = reflect(-Vv, N);
+        float fres = 0.04 + 0.96 * pow(1.0 - max(dot(Vv, N), 0.0), 5.0);
+        col += skyColor(R, 1.5) * fres * glass * 0.8;
+    }
+    col += vec3(1.0, 0.78, 0.45) * lit * uNight * uBoost * 0.55;
+    col = applyFog(col, vRel, dist, uCamAlt + dot(vRel, uU));
+    fragColor = vec4(col, 1.0);
+    gl_FragDepth = log2(vW) * uFC - (vKind.x > 1.5 ? 3e-6 : 0.0);
 }
 
 //@ shadow.vert
@@ -409,7 +540,7 @@ uniform sampler2D uTex;
 uniform vec2 uTexel;
 uniform float uFirst, uThresh;
 out vec4 fragColor;
-vec3 pre(vec3 c) { float l = max(c.r, max(c.g, c.b)); return c * max(l - uThresh, 0.0) / max(l, 1e-6) / (1.0 + 0.02 * l / uThresh); }
+vec3 pre(vec3 c) { if (any(isnan(c))) return vec3(0.0); float l = max(c.r, max(c.g, c.b)); return c * max(l - uThresh, 0.0) / max(l, 1e-6) / (1.0 + 0.02 * l / uThresh); }
 void main() {
     vec2 o = uTexel;
     vec3 s0 = texture(uTex, vUV).rgb, s1 = texture(uTex, vUV + vec2(-o.x, -o.y)).rgb, s2 = texture(uTex, vUV + vec2(o.x, -o.y)).rgb;

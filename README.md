@@ -1,6 +1,6 @@
 # WINGMERE
 
-**A free, open-source flight simulator over the whole real Earth.** Pick any of 9,313 real airports, line up on a real runway and fly anywhere: satellite imagery and terrain elevation stream in while you fly and are cached on disk, every runway is painted on the ground with its real numbers, lights and PAPI, and the sky, sun, clouds and stars follow the real time of day.
+**A free, open-source flight simulator over the whole real Earth.** Pick any of 9,313 real airports and fly anywhere. Satellite imagery, terrain and OpenStreetMap data stream in while you fly: real coastlines, lakes and rivers, 3D buildings in every city with lit windows at night, real taxiways and terminals, and roads that glow after dark. Every runway has its real numbers, lights and PAPI, and the sun, clouds and stars follow the real time of day.
 
 Written in C with SDL2 and OpenGL 3.3, for every Linux distro. MIT licence.
 
@@ -8,16 +8,22 @@ Written in C with SDL2 and OpenGL 3.3, for every Linux distro. MIT licence.
 
 | | |
 |---|---|
-| ![737 on final](docs/approach.jpg) | ![Streamed terrain](docs/streaming.jpg) |
-| ![Night approach](docs/night.jpg) | ![Runway markings](docs/runway.jpg) |
+| ![F-14 afterburners](docs/afterburner.jpg) | ![F-35 on the runway](docs/f35.jpg) |
+| ![3D buildings](docs/city.jpg) | ![City at night](docs/city-night.jpg) |
+| ![737 on final](docs/approach.jpg) | ![Night approach](docs/night.jpg) |
 
-*These were rendered on a build machine with no access to the tile servers, so the ground is the built-in offline world or a local test server. When online you get real Sentinel-2 satellite imagery and real terrain.*
+*These were rendered on a build machine with no access to the real tile servers, so the ground, imagery and buildings come from the built-in offline world and a local test server (`tools/fake_tile_server.py`). Online, you get real satellite imagery, terrain and OpenStreetMap data.*
 
 ## What's in it
 
 - **The real planet, streamed.** A quadtree over the whole Earth in WGS84 double precision, with camera-relative rendering so there's no jitter anywhere, logarithmic depth for a 30 cm to 400 km view, and horizon culling. Imagery and elevation download on background threads, get cached in `~/.cache/wingmere`, and fall back to a procedural world when you're offline.
 - **Every real airport.** 9,313 airports and 12,530 runways from OurAirports. Runways get centrelines, piano keys, aiming points, touchdown-zone bars and their real designators (28R, 09L…), the terrain under them is levelled, and at night the edge, threshold and approach lights come on, including a sequenced-strobe "rabbit". A PAPI shows white/red against your real glide angle.
-- **Four aircraft**, each with its own flight model: Yellow Biplane, F4U Corsair, Airdrop Transport (four turboprops) and a 737 MAX 8.
+- **Real map data for the whole world.** OpenStreetMap vector tiles (OpenFreeMap, no key needed) give exact coastlines, lakes and rivers (also used by the physics, so low land is not "sea"), extruded 3D buildings with facades, glass towers and lit windows at night, painted aprons and taxiways with yellow centrelines and green centreline lights, and street lights along every road at night.
+- **Choose your imagery:** Esri World Imagery (sharp, ~1 m), Sentinel-2 cloudless (10 m, open data) or USGS (USA only).
+- **Seven aircraft**, each with its own flight model and landing gear: Yellow Biplane, F4U Corsair, F-117 Nighthawk, F-35C Lightning II, F-14 Tomcat, Airdrop Transport (four turboprops) and a 737 MAX 8. The F-35 and F-14 light their **afterburners** (the last tenth of the throttle) with shock-diamond flames.
+- **Landing made easy:** flight assists (on by default) turn the stick into a fly-by-wire control that holds attitude, trims itself and coordinates turns, with stall protection. On approach you get autothrottle, a 3D glide-path "highway in the sky", ILS needles, radio-altitude callouts, a FLARE cue, autobrakes, and forgiving landing gear.
+- **Hangar:** repaint any aircraft (12 colours from factory to black metal), pick a finish (matte, gloss, chrome, satin metal) and a smoke colour for airshow smoke (X).
+- **People on board:** pilots you can see in the cockpit (helmets in the jets, leather caps and goggles in the old planes). The 737 carries 186 passengers and the transport 64 troops. They react to g-forces, steep banks and stalls, scream when it gets scary, clap at a smooth landing, and leave you a star rating with a review.
 - **Six-degrees-of-freedom flight model.** Lift with a real stall and post-stall, induced and transonic drag, flaps and gear drag, thrust that fades with speed and altitude, prop wash, stability derivatives, sprung, braked, steerable landing gear, wind with gusts and turbulence, and crash detection (hard landings, wingtip strikes, gear-up landings, ditching).
 - **Graphics:** physically based aircraft materials with normal maps, a single-scattering atmosphere baked into a sky cubemap in your local frame, aerial perspective, raymarched volumetric cumulus, aircraft shadows on the ground, water with sky reflections and sun glint, stars, city lights at night, contrails above 8,200 m, tyre smoke, bloom, lens flare, eye adaptation and ACES tone mapping.
 - **Landing challenges** scored out of 1,000 on sink rate, centreline, touchdown zone and alignment: Maho Beach, Lukla, Saba, Gibraltar, Madeira, Innsbruck, Paro, Queenstown, Aspen, San Francisco at dawn, Hong Kong at night, and a 22-knot crosswind at Heathrow. Best scores are saved.
@@ -34,7 +40,7 @@ cd wingmere
 wingmere
 ```
 
-`./install.sh --system` installs to `/usr/local`, and `--no-deps` skips the package step. The installer knows apt, dnf, pacman, xbps, zypper, apk, emerge and eopkg. To build by hand you need a C compiler, CMake, pkg-config and the development files for SDL2, OpenGL and libcurl:
+`./install.sh --system` installs to `/usr/local`, and `--no-deps` skips the package step. The installer knows apt, dnf, pacman, xbps, zypper, apk, emerge and eopkg. To build by hand you need a C compiler, CMake, pkg-config and the development files for SDL2, OpenGL, libcurl and zlib:
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -57,6 +63,8 @@ It needs a GPU with OpenGL 3.3. Scenery downloads the first time you fly over a 
 | Space | brakes (Shift+Space toggles the parking brake) |
 | , . | trim nose down / up |
 | Z | autopilot on/off; while it's on, the flight controls adjust its targets |
+| Shift+Z | autothrottle on/off; R/F then set its speed |
+| X | airshow smoke |
 | C, F2–F7 | cameras: chase, pilot, tail, orbit, tower, flyby |
 | right mouse drag, wheel | look / orbit, zoom |
 | M | map (+/- zoom) |
@@ -68,7 +76,9 @@ It needs a GPU with OpenGL 3.3. Scenery downloads the first time you fly over a 
 
 **Gamepad:** left stick flies, triggers set throttle, shoulder buttons are the rudder, A = gear, B = brakes, X/Y = flaps, D-pad = trim, Back = camera, Start = pause, left-stick click = autopilot.
 
-**First flight:** pick FREE FLIGHT with the Corsair at KSFO. Press `0` for full power and the parking brake releases itself. Keep straight with Q/E, and at about 100 knots hold S to lift off. Press G to raise the gear.
+**First flight:** pick FREE FLIGHT with the Corsair at KSFO. Press `0` for full power and the parking brake releases itself. Keep straight with Q/E, and at about 100 knots hold S to lift off. Press G to raise the gear. With assists on, let go of the keys and the plane holds its attitude.
+
+**First landing:** set START to ON FINAL APPROACH. The autothrottle holds the approach speed. Keep the aircraft inside the green gates (magenta means you're off the path), and use small taps of W/S. At the FLARE call, hold S gently, and the autobrakes stop you after touchdown.
 
 ## Command line
 
@@ -89,11 +99,16 @@ imagery_max_zoom = 14        # Sentinel-2 is 10 m per pixel, which is zoom 14
 elevation_max_zoom = 12      # 13 gives sharper mountains, using more memory and downloads
 texture_budget = 1536        # satellite tiles kept on the GPU
 threads = 6                  # download threads
-imagery_url = https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg
+imagery = 0                  # 0 Esri World Imagery, 1 Sentinel-2 cloudless, 2 USGS (or set it in SETTINGS)
+imagery_url = ...            # optional: your own XYZ imagery server instead
 elevation_url = https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png
+vector_tilejson = https://tiles.openfreemap.org/planet
+buildings = 1
+assist = 1                   # flight assists
+guide = 1                    # 3D approach gates
 ```
 
-The imagery and elevation sources are just URL templates (`{z}`, `{x}`, `{y}`). Point them at any Web-Mercator XYZ server you're allowed to use: imagery as JPEG/PNG, elevation in Terrarium encoding. `tools/fake_tile_server.py` serves an invented landscape locally, for testing.
+Sources are URL templates (`{z}`, `{x}`, `{y}`), so you can point them at any Web-Mercator XYZ server you're allowed to use: imagery as JPEG/PNG, elevation in Terrarium encoding, and map data as OpenMapTiles-schema vector tiles via a TileJSON. `tools/fake_tile_server.py` serves an invented landscape, town and airport locally, for testing.
 
 ## Adding aircraft
 
@@ -104,7 +119,8 @@ Each folder in `data/aircraft/` is one aircraft: `model.wmdl`, its textures, and
 | File | What it does |
 |---|---|
 | `src/tiles.c` | download threads, libcurl, disk cache, Terrarium/JPEG decoding, procedural fallback |
-| `src/terrain.c` | whole-Earth quadtree, LOD, horizon/frustum culling, skirts, height queries, 2D map |
+| `src/terrain.c` | whole-Earth quadtree, LOD, horizon/frustum culling, skirts, height and water queries, map-data cache, buildings, 2D map |
+| `src/mvt.c` | OpenStreetMap vector tile decoder: water/pavement/road masks, building extrusion, taxiway lines |
 | `src/airport.c` | airports and runways, spatial grid, runway levelling |
 | `src/flight.c` | 6-DOF flight model, gear, wind, crashes |
 | `src/aircraft.c` | aircraft.cfg + WMDL loader, prop and gear animation |
@@ -118,7 +134,10 @@ Each folder in `data/aircraft/` is one aircraft: `model.wmdl`, its textures, and
 
 The code is MIT, © 2026 rxvy. The data and models have their own licences, and **the attributions below must stay with any copy**. They also appear on the in-game CREDITS screen (`data/CREDITS.txt`) and as a line at the bottom of the screen.
 
-- **Imagery:** [Sentinel-2 cloudless 2016](https://s2maps.eu) by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016 & 2017), CC BY 4.0. The EOX tile service is free for non-commercial use with attribution. Wingmere is free and non-commercial.
+- **Map data:** © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL), vector tiles by [OpenMapTiles](https://openmaptiles.org/) and served by [OpenFreeMap](https://openfreemap.org).
+- **Imagery (default):** Esri World Imagery, from Esri, Maxar, Earthstar Geographics and the GIS User Community. Use it only within Esri's terms of use: personal and non-commercial use with attribution. Switch to Sentinel-2 in SETTINGS for imagery under an open licence.
+- **Imagery (USGS option):** USGS National Map, public domain.
+- **Imagery (open option):** [Sentinel-2 cloudless 2016](https://s2maps.eu) by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016 & 2017), CC BY 4.0. The EOX tile service is free for non-commercial use with attribution. Wingmere is free and non-commercial.
 - **Elevation:** [Terrain Tiles on AWS](https://registry.opendata.aws/terrain-tiles/) (Mapzen), built from SRTM, GMTED2010, ETOPO1, NED, Canada CDEM, EU-DEM, Australia DEM, Mexico INEGI, Kartverket, LINZ and others. See their attribution page.
 - **Airports and runways:** [OurAirports](https://ourairports.com/data/), public domain.
 - **Aircraft models**, all CC BY 4.0. *Fill in the authors before publishing:*
@@ -126,8 +145,11 @@ The code is MIT, © 2026 rxvy. The data and models have their own licences, and 
   - F4U Corsair: AUTHOR (link)
   - 737 MAX 8, Lion Air livery: AUTHOR (link)
   - Airdrop Transport (originally a Free Fire plane): AUTHOR (link)
+  - F-35C Lightning II: AUTHOR (link)
+  - F-14 Tomcat: AUTHOR (link)
+  - F-117 Nighthawk: AUTHOR (link)
 
-  The models were re-oriented, scaled and re-materialled, and their textures were resized for the game.
+  The models were re-oriented, scaled and re-materialled, and their textures were resized for the game. Landing gear was added to the F-35 and the transport, which came without any.
 - **Libraries:** SDL2 (zlib), libcurl (curl licence), stb_image and stb_image_write by Sean Barrett (public domain / MIT), ufbx by Samuli Raivio (MIT / public domain, used only by the converter tool).
 
-Boeing, 737 and the Lion Air livery are trademarks of their owners. The Free Fire design belongs to Garena. Wingmere isn't affiliated with any of them, or with Microsoft.
+Boeing, 737, the Lion Air livery, Lockheed Martin, F-35, F-117, Grumman and F-14 are trademarks of their owners. The Free Fire design belongs to Garena. Wingmere isn't affiliated with any of them, or with Microsoft.

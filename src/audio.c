@@ -18,7 +18,7 @@ void audio_event(int ev) {
     for (int i = 0; i < 16; i++) {
         if (voice[i].on) continue;
         voice[i].on = true; voice[i].t = 0; voice[i].kind = ev;
-        voice[i].amp = ev == 0 ? 0.25f : (ev == 1 ? 0.9f : (ev == 2 ? 1.0f : 0.35f));
+        voice[i].amp = ev == 0 ? 0.25f : (ev == 1 ? 0.9f : (ev == 2 ? 1.0f : (ev >= 5 ? 0.5f : 0.35f)));
         break;
     }
     SDL_UnlockAudioDevice(dev);
@@ -47,6 +47,26 @@ static float voice_sample(Voice *v) {
         float f = fmodf(t, 0.5f) < 0.25f ? 1046 : 784;
         s = (sinf(TAU * f * t) + 0.3f * sinf(TAU * f * 2 * t)) * 0.5f * (t < 1.5f);
         if (t > 1.5f) v->on = false;
+        break;
+    }
+    case 5: {                                                                                                /* the cabin screams */
+        float env = smooth(0, 0.15f, t) * (1 - smooth(1.6f, 2.6f, t));
+        float s2 = 0;
+        for (int k = 0; k < 5; k++) {
+            float f0 = 420 + k * 95 + 80 * sinf(TAU * (5.5f + k) * t + k), ph = fmodf(t * f0, 1);
+            s2 += (ph * 2 - 1) * (0.6f + 0.4f * sinf(TAU * (3 + k) * t));
+        }
+        s = lp(&lpCrash, s2 * 0.25f + nz() * 0.3f, 1900) * env * 1.6f;
+        if (t > 2.6f) v->on = false;
+        break;
+    }
+    case 6: {                                                                                                /* applause */
+        static float clap = 0;
+        float env = smooth(0, 0.4f, t) * (1 - smooth(2.5f, 4.0f, t));
+        if (nz() > 0.9993f - 0.0015f * env) clap = 1;
+        clap *= 0.9965f;
+        s = nz() * clap * env * 1.4f;
+        if (t > 4) v->on = false;
         break;
     }
     default: s = (fmodf(t, 0.4f) < 0.2f) * sinf(TAU * 880 * t) * 0.6f; if (t > 1.2f) v->on = false; break;  /* warning chime */

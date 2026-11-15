@@ -28,6 +28,19 @@ REPORT = '--report' in sys.argv
 
 def T(*p): return os.path.join(SRC, *p)
 
+
+def _pbr_set(folder, prefix, names, metal=0.3, rough=0.5):
+    out = {}
+    for n in names:
+        base = T(folder, 'textures', f'{prefix}{n}_')
+        m = dict(metal=metal, rough=rough)
+        if os.path.exists(base + 'BaseColor.png'): m['color'] = base + 'BaseColor.png'
+        else: m['rgba'] = (0.08, 0.08, 0.09, 1)
+        if os.path.exists(base + 'Normal.png'): m['normal'] = base + 'Normal.png'
+        if os.path.exists(base + 'Roughness.png'): m['roughmap'] = base + 'Roughness.png'
+        out[n] = m
+    return out
+
 AIRCRAFT = {
     'biplane': dict(
         raw='biplane.raw', length=7.6, yaw=0,
@@ -72,7 +85,40 @@ AIRCRAFT = {
             'Main Body': dict(color=T('freefire-plane/textures/Main_Body.png'), normal=T('freefire-plane/textures/Main Body_NRM.png'), spec=T('freefire-plane/textures/Main Body_S.png'), metal=0.2),
             'Main Body 2': dict(color=T('freefire-plane/textures/Main_Body2.png'), normal=T('freefire-plane/textures/Main Body 2_NRM.png'), spec=T('freefire-plane/textures/Main Body 2_S.png'), metal=0.2),
         },
+        synth_gear=dict(nose=0.14, main=0.55, track=2.2, height=0.9, rn=0.5, rm=0.62),
         props=['airscrew01a_LOD0', 'airscrew01b_LOD0', 'airscrew01c_LOD0', 'airscrew01d_LOD0'], gear=[], tex_max=1024),
+    'f35': dict(
+        raw='f35.raw', length=15.67, yaw=0,
+        mats={'default': dict(color=T('f35/textures/texture_diffuse.png'), normal=T('f35/textures/texture_normal.png'),
+                              roughmap=T('f35/textures/texture_roughness.png'), metal=0.35, rough=0.5)},
+        synth_gear=dict(nose=0.24, main=0.6, track=2.05, height=1.0, rn=0.33, rm=0.42),
+        nozzle=dict(x=(0.0, 0.75), depth=0.35),
+        pilot_from=dict(z=(0.2, 0.34), drop=0.36),
+        props=[], gear=[], tex_max=2048),
+    'f14': dict(
+        raw='f14.raw', length=19.1, yaw=math.pi,
+        mats={'f14.2': dict(color=T('f14/textures/F_14_Tomcat_Body.png'), rough=0.45, metal=0.15),
+              'f_gear.0': dict(color=T('f14/textures/Gear_1.png'), rough=0.5, metal=0.4),
+              'f_gear.2': dict(color=T('f14/textures/Gear_1.png'), rough=0.5, metal=0.4),
+              'f_gear.3': dict(color=T('f14/textures/Gear_1.png'), rough=0.5, metal=0.4),
+              'extra1.1': dict(color=T('f14/textures/AIM-54C_D.png'), rough=0.5, metal=0.1),
+              'extra1.2': dict(color=T('f14/textures/AIM-9M_D.png'), rough=0.5, metal=0.1),
+              'lights.0': dict(color=T('f14/textures/Lights_T.png'), rough=0.3),
+              'misc_b.0': dict(rgba=(0.35, 0.36, 0.38, 1), rough=0.5, metal=0.3),
+              'misc_b.1': dict(rgba=(0.35, 0.36, 0.38, 1), rough=0.5, metal=0.3),
+              'glass': dict(rgba=(0.05, 0.06, 0.07, 0.3), glass=True, rough=0.05),
+              'glass.001': dict(rgba=(0.05, 0.06, 0.07, 0.3), glass=True, rough=0.05),
+              'glass.002': dict(rgba=(0.05, 0.06, 0.07, 0.3), glass=True, rough=0.05),
+              'canopy.3': dict(rgba=(0.05, 0.06, 0.07, 0.3), glass=True, rough=0.05),
+              '*cockpit': dict(rgba=(0.09, 0.09, 0.1, 1), rough=0.6)},
+        drop=['static_prop', 'static_prop2', 'moving_prop', 'moving_prop2'],
+        nozzle=dict(nodes=['engines'], x=(0.5, 2.3), pairs=True, depth=0.25),
+        props=[], gear=['f_gear', 'm_gear', 'm_gear_arm', 'tire_l', 'tire_r'], tex_max=2048),
+    'f117': dict(
+        raw='f117.raw', length=20.1, yaw=math.pi,
+        mats=_pbr_set('f117', 'full_', [f'Meshpart{i}Mtl' for i in range(1, 49)], metal=0.25, rough=0.6),
+        pilot_from=dict(nodes=['Meshpart22', 'Meshpart23'], drop=0.3),
+        props=[], gear=[f'Meshpart{i}' for i in list(range(6, 13)) + list(range(26, 33)) + list(range(39, 46))], tex_max=1024),
 }
 
 
@@ -98,6 +144,21 @@ FLIGHT = {
                       flaps=3, flap_cl=0.9, flap_cd=0.06, retract=0, gear_cd=0.015, cm_alpha=-1.1, cm_de=-1.5, cm_q=-18,
                       cl_da=0.13, cl_p=-0.5, cl_beta=-0.09, cn_beta=0.12, cn_dr=-0.08, cn_r=-0.15, ixx=1.0e6, iyy=1.3e6, izz=2.2e6,
                       v_rotate=55, v_cruise=150, cam_dist=50, sound='turboprop'),
+    'f35': dict(name='F-35C Lightning II', kind='Stealth multirole fighter, carrier variant', mass=22000, wing_area=62.1, chord=5.0,
+                cl0=0.05, cla=3.6, alpha_stall=28, clmax=1.45, cd0=0.023, k=0.12, thrust=125000, afterburner=191000, engine='jet', prop_v=0,
+                flaps=2, flap_cl=0.35, flap_cd=0.03, retract=1, gear_cd=0.025, cm_alpha=-0.45, cm_de=-1.0, cm_q=-9,
+                cl_da=0.10, cl_p=-0.35, cl_beta=-0.05, cn_beta=0.10, cn_dr=-0.06, cn_r=-0.12, ixx=35000, iyy=180000, izz=200000,
+                v_rotate=70, v_cruise=250, vne=360, cam_dist=24, sound='jet'),
+    'f14': dict(name='F-14 Tomcat', kind='Swing-wing naval interceptor, two crew', mass=24000, wing_area=52.5, chord=3.0,
+                cl0=0.1, cla=4.5, alpha_stall=22, clmax=1.6, cd0=0.024, k=0.09, thrust=142000, afterburner=250000, engine='jet', prop_v=0,
+                flaps=2, flap_cl=0.6, flap_cd=0.05, retract=1, gear_cd=0.025, cm_alpha=-0.6, cm_de=-1.1, cm_q=-10,
+                cl_da=0.09, cl_p=-0.40, cl_beta=-0.07, cn_beta=0.11, cn_dr=-0.07, cn_r=-0.13, ixx=100000, iyy=300000, izz=380000,
+                v_rotate=75, v_cruise=250, vne=370, cam_dist=27, sound='jet'),
+    'f117': dict(name='F-117 Nighthawk', kind='Stealth attack aircraft', mass=18000, wing_area=84.8, chord=6.0,
+                 cl0=0.0, cla=2.8, alpha_stall=20, clmax=1.15, cd0=0.03, k=0.18, thrust=96000, engine='jet', prop_v=0,
+                 flaps=0, flap_cl=0, flap_cd=0, retract=1, gear_cd=0.025, cm_alpha=-0.5, cm_de=-0.9, cm_q=-10,
+                 cl_da=0.08, cl_p=-0.35, cl_beta=-0.06, cn_beta=0.08, cn_dr=-0.05, cn_r=-0.12, ixx=60000, iyy=200000, izz=250000,
+                 v_rotate=82, v_cruise=230, vne=290, cam_dist=27, sound='jet')
 }
 
 def rotate_y(p, ang):
@@ -115,6 +176,8 @@ def fix_texture(path, size, kind, dst):
         im = im.convert('RGB')
     elif kind == 'gloss':
         im = Image.eval(im.convert('L'), lambda g: 255 - g)          # glossiness -> roughness
+    elif kind == 'roughmap':
+        im = im.convert('L')
     elif kind == 'spec':
         im = Image.eval(im.convert('L'), lambda g: int(255 - 0.75 * g))
     elif kind == 'bump':                                              # height -> tangent-space normal map
@@ -130,12 +193,40 @@ def fix_texture(path, size, kind, dst):
     else: dst += '.jpg'; im.save(dst, quality=90)
     return os.path.basename(dst)
 
+def cylinder(c0, c1, r, n=14):
+    """triangles of a capped cylinder between points c0 and c1 (8 floats per vertex)"""
+    c0, c1 = np.array(c0, np.float32), np.array(c1, np.float32)
+    ax = c1 - c0; ax /= np.linalg.norm(ax)
+    t = np.cross(ax, [0, 1, 0] if abs(ax[1]) < 0.9 else [1, 0, 0]); t /= np.linalg.norm(t)
+    b = np.cross(ax, t)
+    out = []
+    for i in range(n):
+        a0, a1 = 2 * math.pi * i / n, 2 * math.pi * (i + 1) / n
+        d0, d1 = t * math.cos(a0) + b * math.sin(a0), t * math.cos(a1) + b * math.sin(a1)
+        p = [c0 + d0 * r, c1 + d0 * r, c1 + d1 * r, c0 + d1 * r]
+        for tri in ((0, 1, 2), (0, 2, 3)):
+            for k in tri:
+                nrm = d0 if k in (0, 1) else d1
+                out.append([*p[k], *nrm, i / n, 0])
+        for cap, sgn in ((c0, -1), (c1, 1)):
+            for q in (cap, cap + d0 * r, cap + d1 * r):
+                out.append([*q, *(ax * sgn), 0, 0])
+    return np.array(out, np.float32)
+
+def gear_mesh(x, ground, z, r, top):
+    """a strut from the belly down to a wheel touching the ground"""
+    w = r * 0.55
+    wheel = cylinder((x - w, ground + r, z), (x + w, ground + r, z), r, 18)
+    strut = cylinder((x, ground + r, z), (x, top, z), r * 0.18, 10)
+    return np.concatenate([wheel, strut])
+
 def fstr(s, n=48):
     b = s.encode('utf-8')[:n - 1]
     return b + b'\0' * (n - len(b))
 
 def build(acid, cfg):
     parts = load_raw(os.path.join(RAW, cfg['raw']))
+    parts = [p for p in parts if p['name'] not in cfg.get('drop', []) and len(p['v']) >= 12]
     allp = np.concatenate([p['v'][:, :3] for p in parts])
     # 1. orientation: nose on +Z
     yaw = cfg['yaw']
@@ -155,6 +246,16 @@ def build(acid, cfg):
     s = cfg['length'] / (mx[2] - mn[2])
     for p in parts: p['v'][:, :3] *= s
     allp *= s; mn *= s; mx *= s
+    if 'synth_gear' in cfg:
+        g = cfg['synth_gear']
+        L = mx[2] - mn[2]
+        ground = mn[1] - g['height']
+        cx0 = (mx[0] + mn[0]) / 2
+        for gi, (gx, gz, r) in enumerate([(cx0, mx[2] - g['nose'] * L, g['rn']), (cx0 - g['track'], mx[2] - g['main'] * L, g['rm']), (cx0 + g['track'], mx[2] - g['main'] * L, g['rm'])]):
+            parts.append(dict(name=f'gear{gi}', mat='synth_gear', pivot=np.zeros(3, np.float32), v=gear_mesh(gx, ground, gz, r, mn[1] + 0.2)))
+        allp = np.concatenate([p['v'][:, :3] for p in parts]); mn, mx = allp.min(0), allp.max(0)
+        cfg['gear'] = cfg['gear'] + ['gear0', 'gear1', 'gear2']
+        cfg['mats']['synth_gear'] = dict(rgba=(0.28, 0.28, 0.3, 1), rough=0.45, metal=0.6)
     # 2. landing gear: the main wheels are the lowest points off the centreline; the third wheel is
     #    the lowest point on the centreline well ahead (tricycle) or well behind (taildragger)
     span, length, height = mx[0] - mn[0], mx[2] - mn[2], mx[1] - mn[1]
@@ -179,6 +280,34 @@ def build(acid, cfg):
     allp -= off; mn -= off; mx -= off
     gear = [mainL - off + np.array([cx, 0, 0]), mainR - off + np.array([cx, 0, 0]), np.array([0, third[1], third[2]]) + np.array([0, -cy, -cz])]
     report = {'length': float(length), 'span': float(span), 'height': float(height), 'tricycle': bool(tricycle), 'gear': [g.round(2).tolist() for g in gear]}
+    # engine nozzles: the aft-most ring of vertices near the given lateral band
+    if 'nozzle' in cfg:
+        nz = cfg['nozzle']
+        src = [p for p in parts if not nz.get('nodes') or p['name'] in nz['nodes']]
+        pts = np.concatenate([p['v'][:, :3] for p in src])
+        noz = []
+        for side in ((-1, 1) if nz.get('pairs') else (0,)):
+            ax = np.abs(pts[:, 0])
+            sel = pts[(ax >= nz['x'][0]) & (ax <= nz['x'][1]) & ((pts[:, 0] * side >= 0) if side else True) & (pts[:, 1] > nz.get('ymin', -99)) & (pts[:, 1] < nz.get('ymax', 99))]
+            zmin = sel[:, 2].min()
+            ring = sel[sel[:, 2] < zmin + nz.get('depth', 0.3)]
+            c = ring.mean(0)
+            r = float(np.percentile(np.linalg.norm(ring[:, :2] - c[:2], axis=1), 90))
+            noz.append((c.round(3).tolist(), round(r, 3)))
+        report['nozzles'] = noz
+    if 'pilot_from' in cfg:
+        pf = cfg['pilot_from']
+        if 'nodes' in pf:
+            pts = np.concatenate([p['v'][:, :3] for p in parts if p['name'] in pf['nodes']])
+        else:                                   # a band of the fuselage, as fractions of length from the nose
+            z0, z1 = mx[2] - pf['z'][1] * length, mx[2] - pf['z'][0] * length
+            pts = allp[(allp[:, 2] > z0) & (allp[:, 2] < z1) & (np.abs(allp[:, 0] - 0) < 0.35)]
+        cmin, cmax = pts.min(0), pts.max(0)
+        top = cmax[1] - pf.get('drop', 0.32)
+        seats = pf.get('seats', 1)
+        zs = [(cmin[2] + cmax[2]) / 2] if seats == 1 else [cmin[2] + (cmax[2] - cmin[2]) * f for f in (0.72, 0.3)]
+        cfg['pilots'] = [[0.0, float(top), float(z) + pf.get('dz', 0.0)] for z in zs]
+        report['pilots'] = cfg['pilots']
     # 4. split parts; propeller parts that span both sides become two parts
     out_parts = []
     for p in parts:
@@ -194,6 +323,18 @@ def build(acid, cfg):
             pivot = g[:, :3].mean(0) if kind else np.zeros(3, np.float32)
             if kind == 2: pivot = np.array([g[:, 0].mean(), g[:, 1].max(), g[:, 2].mean()])
             out_parts.append(dict(name=p['name'], mat=p['name'] if p['name'] in cfg['mats'] else p['mat'], kind=kind, pivot=pivot, v=g))
+    # merge everything that is drawn the same way (same material, not a propeller) to cut draw calls
+    merged = {}
+    for op in out_parts:
+        if op['kind'] == 1:
+            merged[id(op)] = op
+            continue
+        k = (op['mat'], op['kind'])
+        if k in merged:
+            merged[k]['v'] = np.concatenate([merged[k]['v'], op['v']])
+        else:
+            merged[k] = dict(op, name=op['name'] if op['kind'] == 0 else 'gear')
+    out_parts = list(merged.values())
     if REPORT:
         print(acid, report)
         for op in out_parts:
@@ -204,7 +345,9 @@ def build(acid, cfg):
     matnames = sorted(set(op['mat'] for op in out_parts))
     mats = []
     for mname in matnames:
-        mc = cfg['mats'].get(mname, {})
+        mc = cfg['mats'].get(mname)
+        if mc is None:
+            mc = next((v for k, v in cfg['mats'].items() if k.startswith('*') and mname.startswith(k[1:])), {})
         safe = ''.join(ch if ch.isalnum() else '_' for ch in mname).strip('_').lower()
         tex = {'color': '', 'normal': '', 'rough': ''}
         if 'color' in mc: tex['color'] = fix_texture(mc['color'], cfg['tex_max'], 'color', os.path.join(d, safe + '_color'))
@@ -212,8 +355,17 @@ def build(acid, cfg):
         if 'bump' in mc: tex['normal'] = fix_texture(mc['bump'], cfg['tex_max'], 'bump', os.path.join(d, safe + '_normal'))
         if 'gloss' in mc: tex['rough'] = fix_texture(mc['gloss'], cfg['tex_max'], 'gloss', os.path.join(d, safe + '_rough'))
         if 'spec' in mc: tex['rough'] = fix_texture(mc['spec'], cfg['tex_max'], 'spec', os.path.join(d, safe + '_rough'))
+        if 'roughmap' in mc: tex['rough'] = fix_texture(mc['roughmap'], cfg['tex_max'], 'roughmap', os.path.join(d, safe + '_rough'))
         rgba = mc.get('rgba', (1, 1, 1, 1) if 'color' in mc else (0.6, 0.6, 0.6, 1))
         mats.append(dict(name=mname, rgba=rgba, metal=mc.get('metal', 0.0), rough=mc.get('rough', 0.55), flags=1 if mc.get('glass') else 0, tex=tex))
+    # 5b. some models carry zero-length normals: give those vertices their face normal
+    for op in out_parts:
+        v = op['v']; tri = v.reshape(-1, 3, 8)
+        fn = np.cross(tri[:, 1, :3] - tri[:, 0, :3], tri[:, 2, :3] - tri[:, 0, :3])
+        fn /= np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-12)
+        bad = np.linalg.norm(tri[:, :, 3:6], axis=2) < 0.5
+        tri[:, :, 3:6] = np.where(bad[..., None], fn[:, None, :], tri[:, :, 3:6])
+        op['v'] = tri.reshape(-1, 8)
     # 6. write the model
     with open(os.path.join(d, 'model.wmdl'), 'wb') as f:
         f.write(b'WMDL' + struct.pack('<I3f', 1, report['length'], report['span'], report['height']))
@@ -237,8 +389,12 @@ def build(acid, cfg):
         f.write(f'span = {report["span"]:.2f}\nlength = {report["length"]:.2f}\nheight = {report["height"]:.2f}\n')
         f.write(f'tricycle = {int(report["tricycle"])}\n')
         for i, g in enumerate(report['gear']): f.write(f'gear{i} = {g[0]:.3f} {g[1]:.3f} {g[2]:.3f}\n')
+        for i, (c, r) in enumerate(report.get('nozzles', [])): f.write(f'nozzle{i} = {c[0]:.3f} {c[1]:.3f} {c[2]:.3f} {r:.3f}\n')
+        for i, pp in enumerate(cfg.get('pilots', [])): f.write(f'pilot{i} = {pp[0]:.3f} {pp[1]:.3f} {pp[2]:.3f}\n')
     size = sum(os.path.getsize(os.path.join(d, x)) for x in os.listdir(d))
     print(f'{acid}: {len(out_parts)} parts, {len(mats)} materials, {report["length"]:.1f} m long, {report["span"]:.1f} m span, {size/1e6:.1f} MB')
 
+only = [a for a in sys.argv[1:] if not a.startswith('--')]
 for k, c in AIRCRAFT.items():
-    build(k, c)
+    if not only or k in only:
+        build(k, c)
