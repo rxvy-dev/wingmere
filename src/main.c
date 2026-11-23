@@ -36,6 +36,10 @@ static d3 towerPos; static float towerTimer;
 static Camera cam;
 static bool showHud = true, showMap, showFps, showHelp, paused, parkBrake;
 static bool searchFly;
+static float flareElev, groundT, gndHdg, sinceTouch = 99, tdPitch; static bool bounceHold, landingTouch, gndWas; static float gndCont;   /* touchdown hand-over from fly-by-wire to the stick */
+static char argTrack[8]; static bool argWatch;
+static bool watching;              /* the camera is following the tracked aircraft; yours waits */
+static float watchSize = 1;
 static int argPos; static double posLat, posLon, posAlt; static float posHdg;            /* the airport search was opened from the pause menu: go straight there */
 static double mapDX, mapDY; static int mapDownX, mapDownY; static bool mapDrag;   /* map panning, in tiles at mapZoom */
 static int mapZoom = 11;
@@ -165,6 +169,11 @@ static void settings_defaults(void) {
     S.buildings = true;
     snprintf(S.traffic_url, sizeof S.traffic_url, "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist}");
     S.traffic = true; S.labels = true;
+    snprintf(S.traffic_hex_url, sizeof S.traffic_hex_url, "https://api.adsb.lol/v2/hex/{hex}");
+    snprintf(S.tracker_info_url, sizeof S.tracker_info_url, "https://api.adsbdb.com/v0/aircraft/{hex}?callsign={callsign}");
+    snprintf(S.photo_url, sizeof S.photo_url, "https://api.planespotters.net/pub/photos/hex/{hex}");
+    snprintf(S.global_url, sizeof S.global_url, "https://opensky-network.org/api/states/all?extended=1");
+    S.traffic_global = true; S.global_interval = 150;
     home_path(cfgPath, sizeof cfgPath, "XDG_CONFIG_HOME", ".config", "/wingmere.cfg");
     home_path(scorePath, sizeof scorePath, "XDG_DATA_HOME", ".local/share", "/scores.txt");
 }
@@ -201,6 +210,14 @@ static void settings_load(void) {
         else if (!strcmp(k, "traffic")) S.traffic = atoi(v);
         else if (!strcmp(k, "traffic_url")) snprintf(S.traffic_url, sizeof S.traffic_url, "%s", v);
         else if (!strcmp(k, "traffic_labels")) S.labels = atoi(v);
+        else if (!strcmp(k, "traffic_hex_url")) snprintf(S.traffic_hex_url, sizeof S.traffic_hex_url, "%s", v);
+        else if (!strcmp(k, "tracker_info_url")) snprintf(S.tracker_info_url, sizeof S.tracker_info_url, "%s", v);
+        else if (!strcmp(k, "photo_url")) snprintf(S.photo_url, sizeof S.photo_url, "%s", v);
+        else if (!strcmp(k, "traffic_global")) S.traffic_global = atoi(v);
+        else if (!strcmp(k, "global_url")) snprintf(S.global_url, sizeof S.global_url, "%s", v);
+        else if (!strcmp(k, "global_interval")) S.global_interval = (float)atof(v);
+        else if (!strcmp(k, "opensky_client_id")) snprintf(S.sky_id, sizeof S.sky_id, "%s", v);
+        else if (!strcmp(k, "opensky_client_secret")) snprintf(S.sky_secret, sizeof S.sky_secret, "%s", v);
         else if (!strcmp(k, "width")) rc.w = atoi(v);
         else if (!strcmp(k, "height")) rc.h = atoi(v);
         else if (!strcmp(k, "fullscreen")) fullscreen = atoi(v);
@@ -236,6 +253,9 @@ static void settings_save(void) {
     if (strcmp(defCache, S.cache_dir)) fprintf(f, "cache_dir = %s\n", S.cache_dir);
     fprintf(f, "elevation_url = %s\nvector_tilejson = %s\nbuildings = %d\n", S.elevation_url, S.vector_tilejson, S.buildings);
     fprintf(f, "traffic = %d\ntraffic_url = %s\ntraffic_labels = %d\n", S.traffic, S.traffic_url, S.labels);
+    fprintf(f, "traffic_hex_url = %s\ntracker_info_url = %s\nphoto_url = %s\n", S.traffic_hex_url, S.tracker_info_url, S.photo_url);
+    fprintf(f, "traffic_global = %d\nglobal_url = %s\nglobal_interval = %.0f\n", S.traffic_global, S.global_url, S.global_interval);
+    if (S.sky_id[0]) fprintf(f, "opensky_client_id = %s\nopensky_client_secret = %s\n", S.sky_id, S.sky_secret);
     fprintf(f, "imagery_max_zoom = %d\nelevation_max_zoom = %d\nthreads = %d\ntexture_budget = %d\ndetail = %.2f\noffline = %d\n",
             S.imagery_max_zoom, S.elevation_max_zoom, S.threads, S.texture_budget, S.detail, cliOffline ? cfgOffline : S.offline);
     fprintf(f, "width = %d\nheight = %d\nfullscreen = %d\nmsaa = %d\nrender_scale = %.2f\nshadow_res = %d\nclouds = %d\nvolume = %.2f\ninvert_pitch = %d\n",
@@ -616,7 +636,23 @@ static void update_camera(float dt) {
         break;
     }
     }
-    if (camMode != CAM_COCKPIT) ground_clamp(&cam.pos);
+    int wi = watching ? tracker_index() : -1;
+    if (wi >= 0) {
+        /* orbit the tracked aircraft: right mouse to look around, wheel to zoom */
+        Traffic *t = &g_traffic[wi];
+        d3 p = geo_to_ecef(t->lat, t->lon, t->alt);
+        v3 e, n, u; enu_basis(t->lat, t->lon, &e, &n, &u);
+        float hd = t->prevTrack * DEG, yaw = camYaw + hd + (float)M_PI;
+        float sz = (t->atype >= 0 ? fmaxf(airframe_length(t->atype), airframe_span(t->atype)) * 0.62f : 34 * (t->scale > 0 ? t->scale : 1)) * camZoom;
+        watchSize += (sz - watchSize) * (1 - expf(-dt * 3));
+        float pch = clampf(camPitch, -0.4f, 1.4f);
+        v3 dir = vadd(vmul(n, cosf(yaw)), vmul(e, sinf(yaw)));
+        v3 off = vadd(vmul(dir, watchSize * 2.2f * cosf(pch)), vmul(u, watchSize * 2.2f * sinf(pch)));
+        cam.pos = dadd(p, f2d(off));
+        cam.fwd = vnorm(vmul(off, -1));
+        cam.up = u; cam.fov = 50 * DEG;
+    }
+    if (camMode != CAM_COCKPIT || wi >= 0) ground_clamp(&cam.pos);
 }
 
 /* ------------------------------------------------------------------ HUD */
@@ -624,9 +660,9 @@ static float W, H, s_;
 #define SZ(v) ((v) * s_)
 static void panel(float x, float y, float w, float h, float a) { hud_rect(x, y, w, h, 0.02f, 0.02f, 0.025f, a); hud_rect(x, y, w, SZ(2), RED, 0.9f); }
 static void attribution(float a) {
-    char b[400];
+    char b[480];
     snprintf(b, sizeof b, "%s  ELEVATION: TERRAIN TILES (MAPZEN, AWS)  MAP DATA: OPENSTREETMAP CONTRIBUTORS, OPENMAPTILES, OPENFREEMAP  AIRPORTS: OURAIRPORTS%s", S.offline ? "OFFLINE WORLD" : PROV[provSel].attr,
-             S.traffic && !S.offline ? "  TRAFFIC: ADSB.LOL (ODBL)" : "");
+             S.traffic && !S.offline ? (S.traffic_global ? "  TRAFFIC: ADSB.LOL (ODBL), THE OPENSKY NETWORK" : "  TRAFFIC: ADSB.LOL (ODBL)") : "");
     hud_text(W - SZ(12), H - SZ(5), SZ(9), b, WHITE, a, 2);
 }
 static void draw_compass(float cx, float y, float w) {
@@ -907,6 +943,49 @@ static void map_to_screen(double lat, double lon, double cx, double cy, float *x
     *x = W / 2 + (float)(dx * map_tile_px()); *y = H / 2 + (float)((merc_y(lat, mapZoom) - cy) * map_tile_px());
 }
 static void teleport(double lat, double lon, double alt, float heading);
+/* click on a plane on the map to track it */
+static bool map_pick(float sx, float sy) {
+    double cx, cy; map_center(&cx, &cy);
+    int best = -1; float bd = SZ(14) * SZ(14);
+    for (int i = 0; i < g_ntraffic; i++) {
+        float x, y; map_to_screen(g_traffic[i].lat, g_traffic[i].lon, cx, cy, &x, &y);
+        float d = (x - sx) * (x - sx) + (y - sy) * (y - sy);
+        if (d < bd) { bd = d; best = i; }
+    }
+    if (best < 0) return false;
+    tracker_select(g_traffic[best].hex); audio_event(0);
+    return true;
+}
+/* jump in beside the tracked aircraft, matching its height, heading and speed */
+static void fly_with(void) {
+    int i = tracker_index();
+    if (i < 0) { say("PICK AN AIRCRAFT FIRST: K FOR THE TRACKER, OR N"); return; }
+    Traffic *t = &g_traffic[i];
+    if (t->ground) { say("IT IS ON THE GROUND. WAIT FOR IT TO TAKE OFF"); return; }
+    float spd = t->gs, lo = flight_stall_speed(FL.def, 0) * 1.35f, hi = FL.def->vne > 0 ? FL.def->vne * 0.92f : 300;
+    bool clamped = spd < lo || spd > hi;
+    spd = clampf(spd, lo, hi);
+    double la, ln, la2, ln2;
+    float span = 30 * (t->scale > 0 ? t->scale : 1);
+    geo_offset(t->lat, t->lon, t->prevTrack + 180, span * 3.0, &la, &ln);
+    geo_offset(la, ln, t->prevTrack + 90, span * 1.4, &la2, &ln2);
+    watching = false;
+    flight_reset(&FL, FL.def, la2, ln2, (float)(t->alt + 15), t->prevTrack, spd, false);
+    if (FL.def->retract) FL.gearDown = FL.gearCmd = 0;
+    FL.flapsSet = 0; FL.flaps = 0; parkBrake = false; simRate = 1;
+    flight_trim(&FL, atan2f(t->vrate, fmaxf(t->gs, 30)) / DEG);
+    if (assist) { athr = true; athrSpd = spd; }
+    holdInit = false; chaseInit = false; fx_clear();
+    char b[96]; snprintf(b, sizeof b, clamped ? "ON %s'S WING (AS CLOSE TO ITS SPEED AS YOU CAN GO)" : "ON %s'S WING", t->callsign); say(b);
+}
+static void draw_watch_banner(void) {
+    int i = tracker_index();
+    char b[96];
+    if (i >= 0) snprintf(b, sizeof b, "WATCHING %s   RIGHT MOUSE LOOK   WHEEL ZOOM   J BACK TO YOUR AIRCRAFT", g_traffic[i].callsign);
+    else snprintf(b, sizeof b, "WAITING FOR %s TO REAPPEAR...   J BACK TO YOUR AIRCRAFT", g_track.callsign[0] ? g_track.callsign : g_track.hex);
+    hud_rect(0, SZ(14), W, SZ(30), 0, 0, 0, 0.5f);
+    hud_text(W / 2, SZ(35), SZ(13), b, WHITE, 0.95f, 1);
+}
 /* click on the map to go there: same heading, speed and height (at least 900 m above whatever is below) */
 static void map_teleport(float sx, float sy) {
     double cx, cy; map_center(&cx, &cy);
@@ -967,6 +1046,44 @@ static void draw_map(void) {
             hud_text(x + SZ(9), y + SZ(4), SZ(10), b, 0.95f, 0.8f, 0.4f, 0.9f, 0);
         }
     }
+    /* the tracked aircraft: where it has been, and the rest of the way to where it is going */
+    int ti = tracker_index();
+    if (ti >= 0) {
+        Traffic *t = &g_traffic[ti];
+        float px = 0, py = 0;
+        for (int k = 0; k <= t->ntrail; k++) {
+            double la = t->lat, lo = t->lon;
+            if (k < t->ntrail) { int j = (t->trailHead - t->ntrail + k + TRAIL * 2) % TRAIL; la = t->trail[j][0]; lo = t->trail[j][1]; }
+            float qx, qy; map_to_screen(la, lo, cx, cy, &qx, &qy);
+            if (k && fabsf(qx - px) < W * 0.5f) hud_line(px, py, qx, qy, SZ(3), AMBER, 0.95f);
+            px = qx; py = qy;
+        }
+        if (g_track.hasRoute) {
+            /* the great circle on to the destination, dashed, and both airports */
+            double total = geo_dist(t->lat, t->lon, g_track.to.lat, g_track.to.lon), brg = geo_bearing(t->lat, t->lon, g_track.to.lat, g_track.to.lon);
+            float ax, ay; map_to_screen(t->lat, t->lon, cx, cy, &ax, &ay);
+            double la = t->lat, lo = t->lon;
+            for (int k = 1; k <= 96; k++) {
+                double step = total / 96, nla, nlo;
+                geo_offset(la, lo, brg, step, &nla, &nlo);
+                brg = geo_bearing(nla, nlo, g_track.to.lat, g_track.to.lon);
+                la = nla; lo = nlo;
+                float bx, by; map_to_screen(la, lo, cx, cy, &bx, &by);
+                if ((k & 1) && fabsf(bx - ax) < W * 0.5f) hud_line(ax, ay, bx, by, SZ(2), WHITE, 0.8f);
+                ax = bx; ay = by;
+            }
+            const RouteAirport *ap2[2] = {&g_track.from, &g_track.to};
+            for (int k = 0; k < 2; k++) {
+                float qx, qy; map_to_screen(ap2[k]->lat, ap2[k]->lon, cx, cy, &qx, &qy);
+                if (k) hud_circle(qx, qy, SZ(7), SZ(2.5f), RED, 1); else hud_circle(qx, qy, SZ(7), SZ(2.5f), WHITE, 1);
+                char b2[24]; snprintf(b2, sizeof b2, "%s", ap2[k]->iata[0] ? ap2[k]->iata : ap2[k]->icao);
+                hud_text(qx + SZ(11), qy - SZ(8), SZ(13), b2, WHITE, 1, 0);
+            }
+        }
+        float qx, qy; map_to_screen(t->lat, t->lon, cx, cy, &qx, &qy);
+        hud_circle(qx, qy, SZ(13), SZ(2.5f), RED, 1);
+        hud_text(qx + SZ(16), qy + SZ(4), SZ(12), t->callsign, RED, 1, 0);
+    }
     hud_clip_off();
     /* the aircraft */
     float x, y; map_to_screen(FL.lat, FL.lon, cx, cy, &x, &y);
@@ -987,9 +1104,12 @@ static void draw_map(void) {
 /* callsigns over the real aircraft around you */
 static void draw_traffic_labels(void) {
     if (!S.labels || !g_ntraffic) return;
+    double clat, clon, calt; ecef_to_geo(cam.pos, &clat, &clon, &calt);
+    float cosl = cosf((float)(clat * M_PI / 180));
     for (int i = 0; i < g_ntraffic; i++) {
         Traffic *t = &g_traffic[i];
-        double d = geo_dist(FL.lat, FL.lon, t->lat, t->lon);
+        if (fabs(t->lat - clat) > 0.4 || fabs(remainder(t->lon - clon, 360.0)) * cosl > 0.4) continue;
+        double d = geo_dist(clat, clon, t->lat, t->lon);
         if (d > 40000 || d < 60) continue;
         float sx, sy;
         if (!world_to_screen(geo_to_ecef(t->lat, t->lon, t->alt + 12), &cam, &sx, &sy)) continue;
@@ -1010,7 +1130,7 @@ static void draw_help(void) {
         "R F / PGUP PGDN   THROTTLE    1-9 0  SET THROTTLE   `  IDLE", "G                 LANDING GEAR", "V B               FLAPS DOWN / UP",
         "SPACE             BRAKES (SHIFT+SPACE PARKING BRAKE)", ", .               TRIM NOSE DOWN / UP", "Z                 AUTOPILOT (CONTROLS THEN ADJUST ITS TARGETS)",
         "C  F2-F7          CAMERAS     RIGHT MOUSE  LOOK / ORBIT   WHEEL  ZOOM", "M                 WORLD MAP (CLICK ANYWHERE TO TELEPORT)",
-        "P  TAB            PAUSE  SIM RATE / TIME WARP UP TO X64 (SHIFT+TAB DOWN)", "L                 LIVE TRAFFIC LABELS",
+        "P  TAB            PAUSE  SIM RATE / TIME WARP UP TO X64 (SHIFT+TAB DOWN)", "L                 LIVE TRAFFIC LABELS", "K  N  SHIFT+N     PLANE TRACKER: LIST, NEXT / PREVIOUS PLANE", "J  SHIFT+J  DEL   WATCH IT, FLY ON ITS WING, STOP TRACKING",
         "H  F3             HIDE HUD  FPS", "T  SHIFT+T        TIME OF DAY", "F12               SCREENSHOT", "ESC               MENU",
     };
     int n = (int)(sizeof L / sizeof L[0]);
@@ -1291,7 +1411,8 @@ static float axis(SDL_GameControllerAxis a) {
 }
 static float approachf(float v, float target, float rate) { return v < target ? fminf(v + rate, target) : fmaxf(v - rate, target); }
 static void flight_controls(float dt) {
-    const Uint8 *k = SDL_GetKeyboardState(NULL);
+    static const Uint8 none[SDL_NUM_SCANCODES];
+    const Uint8 *k = g_trackTyping ? none : SDL_GetKeyboardState(NULL);
     SDL_Keymod mod = SDL_GetModState();
     float kp = (k[SDL_SCANCODE_S] || k[SDL_SCANCODE_DOWN]) - (k[SDL_SCANCODE_W] || k[SDL_SCANCODE_UP]);
     float kr = (k[SDL_SCANCODE_D] || k[SDL_SCANCODE_RIGHT]) - (k[SDL_SCANCODE_A] || k[SDL_SCANCODE_LEFT]);
@@ -1347,7 +1468,7 @@ static void flight_controls(float dt) {
     if (parkBrake && FL.throttle > 0.45f) { parkBrake = false; say("PARKING BRAKE RELEASED"); }
     FL.brake = (br || parkBrake) ? 1.0f : 0.0f;
     /* autobrake after an assisted landing, until walking pace */
-    if (assist && touchedDown && FL.onGround && FL.throttle < 0.15f && FL.gs > 12 * KT && !br) FL.brake = fmaxf(FL.brake, 0.55f);
+    if (assist && touchedDown && FL.onGround && FL.throttle < 0.15f && FL.gs > 12 * KT && !br) FL.brake = fmaxf(FL.brake, FL.def->tricycle ? 0.55f : 0.22f);
     if (ap) {
         /* with the autopilot on, the controls nudge its targets */
         apAlt += -kp * 150 * dt * (k[SDL_SCANCODE_LSHIFT] ? 4 : 1);
@@ -1358,23 +1479,54 @@ static void flight_controls(float dt) {
         if (fabsf(jp) > 0.5f || fabsf(jr) > 0.5f) { ap = false; audio_event(3); say("AUTOPILOT OFF"); }
         else { autopilot(dt); return; }
     }
+    /* a landing is a touchdown after real flight; a bounce is leaving the ground again soon after one */
+    if (FL.onGround) {
+        if (airTime > 8) { landingTouch = true; tdPitch = FL.pitch; }
+        gndCont += dt; sinceTouch = 0; bounceHold = false;
+    } else { sinceTouch += dt; gndCont = 0; }
+    if (gndCont > 6 || FL.throttle > 0.6f) landingTouch = false;
     airTime = FL.onGround ? 0 : airTime + dt;
     float pr = (FL.pitch - prevPitch) / fmaxf(dt, 1e-3f), brt = (FL.bank - prevBank) / fmaxf(dt, 1e-3f);
     float yr = wrap180(FL.heading - yawPrev) / fmaxf(dt, 1e-3f); yawPrev = FL.heading;
     if (!assist) { FL.elev = elev; FL.ail = ail; FL.rud = rud; return; }
     if (FL.onGround || airTime < 0.8f) {
-        /* on the runway: direct pitch for the rotation, rudder steering with a yaw damper to keep it straight */
-        FL.elev = elev; FL.ail = clampf(ail - FL.bank * 0.03f, -1, 1);
-        FL.rud = clampf(rud - yr * 0.04f, -1, 1);
+        /* on the runway: direct pitch for the rotation, rudder steering with a yaw damper to keep it straight.
+         * After a touchdown the elevator the fly-by-wire was holding in the flare is handed back to the stick
+         * over a second and a half, so the nose comes down gently instead of slamming onto its wheel. */
+        groundT = FL.onGround ? groundT + dt : groundT;
+        float k = smooth(0.0f, 1.6f, groundT);
+        FL.elev = clampf(elev + flareElev * (1 - k), -1, 1); FL.ail = clampf(ail - FL.bank * 0.03f, -1, 1);
+        if (!FL.def->tricycle && FL.onGround && fabsf(elev) < 0.05f) {
+            /* taildragger on its main wheels: let go of the flare quickly and hold a touch of forward stick
+             * so it stays on the ground instead of pitching up and skipping back into the air */
+            float k2 = smooth(0.0f, 0.35f, groundT);
+            bool fast = FL.ias > flight_stall_speed(FL.def, FL.flaps) * 0.85f;
+            FL.elev = clampf(flareElev * (1 - k2) - (!FL.contact[2] && fast ? 0.22f * k2 : 0), -1, 1);
+        }
+        /* hands off the rudder: hold the heading you were rolling on (taildraggers want to swap ends) */
+        if (fabsf(rud) > 0.05f || FL.gs < 3 * KT || !gndWas) gndHdg = FL.heading;
+        gndWas = true;
+        float hk = FL.def->tricycle ? 0.05f : 0.12f, dk = FL.def->tricycle ? 0.04f : 0.12f;
+        FL.rud = clampf(rud + (fabsf(rud) > 0.05f ? 0 : wrap180(gndHdg - FL.heading) * hk) - yr * dk, -1, 1);
         holdInit = false;
         return;
     }
     /* in the air: fly-by-wire. Stick = pitch and roll rate, let go = the aeroplane holds its attitude */
     float rin = clampf((float)kr + jr, -1, 1);
     float pin = clampf(kp + jp, -1, 1);
-    if (!holdInit) { tgtPitch = FL.pitch; tgtBank = fabsf(FL.bank) < 5 ? 0 : FL.bank; eInt = FL.elev; bankHold = true; holdInit = true; }
+    if (!holdInit) {
+        /* take over from the stick without a jolt: the trim the pilot had becomes part of the held elevator */
+        tgtPitch = FL.pitch; tgtBank = fabsf(FL.bank) < 5 ? 0 : FL.bank; eInt = clampf(FL.elev + FL.trim, -1, 1); bankHold = true; holdInit = true;
+        /* back in the air straight after touching down (a bounce): don't hold the nose up and float away,
+         * lower it to the touchdown attitude and let the aeroplane settle back onto its wheels */
+        if (landingTouch && sinceTouch < 4 && FL.agl < 20) { tgtPitch = fminf(FL.pitch, tdPitch - 1.0f); bounceHold = true; }
+    }
     bool heavy = FL.def->mass > 35000;
     float maxQ = heavy ? 4.5f : 11, maxP = heavy ? 18 : (FL.def->jet ? 110 : 70);
+    if (bounceHold) {
+        if (pin < -0.1f || FL.agl > 25 || FL.vs > 4) bounceHold = false;      /* the pilot pulls up to go around */
+        else tgtPitch = fminf(tgtPitch, tdPitch - 1.0f) - (FL.vs > 0 ? FL.vs * 0.8f * dt : 0);
+    }
     tgtPitch = clampf(tgtPitch + pin * maxQ * dt, -22, 28);
     tgtPitch = clampf(tgtPitch, FL.pitch - 6, FL.pitch + 6);
     /* stall protection: never let the target pitch drag the speed below 1.2 Vs */
@@ -1385,6 +1537,7 @@ static void flight_controls(float dt) {
     eInt = clampf(eInt + err * 0.03f * dt, -1, 1);
     FL.elev = clampf(err * 0.08f - pr * 0.035f + eInt, -1, 1);
     FL.trim = 0;
+    flareElev = FL.elev; groundT = 0; gndWas = false;
     if (fabsf(rin) > 0.05f) {
         float cmd = rin * maxP;
         if ((FL.bank > 67 && cmd > 0) || (FL.bank < -67 && cmd < 0)) cmd = 0;
@@ -1493,6 +1646,7 @@ static void handle_event(SDL_Event *e) {
     }
     if (e->type == SDL_MOUSEBUTTONDOWN) {
         if (e->button.button == SDL_BUTTON_RIGHT || e->button.button == SDL_BUTTON_MIDDLE) { mouseLook = true; SDL_SetRelativeMouseMode(SDL_TRUE); return; }
+        if (e->button.button == SDL_BUTTON_LEFT && state == ST_FLY && !showMap && tracker_click((float)mouseX, (float)mouseY)) return;
         if (e->button.button == SDL_BUTTON_LEFT && state == ST_FLY && showMap) { mapDrag = true; mapDownX = mouseX; mapDownY = mouseY; return; }
         if (e->button.button == SDL_BUTTON_LEFT) {
             for (int i = 0; i < nItems; i++) if (hover(i)) {
@@ -1509,13 +1663,20 @@ static void handle_event(SDL_Event *e) {
     }
     if (e->type == SDL_MOUSEBUTTONUP && e->button.button == SDL_BUTTON_LEFT && mapDrag) {
         mapDrag = false;
-        if (state == ST_FLY && showMap && abs(mouseX - mapDownX) + abs(mouseY - mapDownY) < 6) map_teleport((float)mouseX, (float)mouseY);
+        if (state == ST_FLY && showMap && abs(mouseX - mapDownX) + abs(mouseY - mapDownY) < 6 && !map_pick((float)mouseX, (float)mouseY)) map_teleport((float)mouseX, (float)mouseY);
         return;
     }
     if (e->type == SDL_MOUSEBUTTONUP && (e->button.button == SDL_BUTTON_RIGHT || e->button.button == SDL_BUTTON_MIDDLE)) { mouseLook = false; SDL_SetRelativeMouseMode(SDL_FALSE); return; }
+    if (e->type == SDL_MOUSEWHEEL && state == ST_FLY && !showMap && tracker_over_list((float)mouseX, (float)mouseY)) { tracker_scroll(e->wheel.y > 0 ? -3 : 3); return; }
     if (e->type == SDL_MOUSEWHEEL) {
         if (showMap) { int nz = (int)clampf((float)(mapZoom + e->wheel.y), 2, (float)S.imagery_max_zoom); while (nz > mapZoom) { mapZoom++; mapDX *= 2; mapDY *= 2; } while (nz < mapZoom) { mapZoom--; mapDX /= 2; mapDY /= 2; } }
         else camZoom = clampf(camZoom * (e->wheel.y > 0 ? 0.88f : 1.13f), 0.3f, 4.0f);
+        return;
+    }
+    if (e->type == SDL_TEXTINPUT && g_trackTyping) {
+        size_t n = strlen(g_trackSearch);
+        for (const char *c = e->text.text; *c && n < sizeof g_trackSearch - 1; c++) if ((unsigned char)*c >= 32 && (unsigned char)*c < 127 && *c != '/') g_trackSearch[n++] = *c;
+        g_trackSearch[n] = 0; tracker_scroll(-100000);
         return;
     }
     if (e->type == SDL_TEXTINPUT && state == ST_SEARCH) {
@@ -1539,6 +1700,13 @@ static void handle_event(SDL_Event *e) {
     SDL_Keycode key = e->key.keysym.sym;
     bool shift = e->key.keysym.mod & KMOD_SHIFT;
     if (key == SDLK_F12) { screenshot(); return; }
+    if (g_trackTyping) {
+        /* typing into the tracker's search box: keys are letters, not controls */
+        if (key == SDLK_BACKSPACE) { size_t n = strlen(g_trackSearch); if (n) g_trackSearch[n - 1] = 0; tracker_scroll(-100000); }
+        else if (key == SDLK_ESCAPE || key == SDLK_RETURN || key == SDLK_KP_ENTER) { if (key == SDLK_ESCAPE) g_trackSearch[0] = 0; g_trackTyping = false; SDL_StopTextInput(); }
+        return;
+    }
+    if (state == ST_FLY && g_trackPanel && (key == SDLK_SLASH || key == SDLK_KP_DIVIDE)) { g_trackTyping = true; SDL_StartTextInput(); return; }
     if (key == SDLK_F5 && !e->key.repeat) { render_reload_shaders(); say("SHADERS RELOADED"); return; }
     switch (state) {
     case ST_MENU:
@@ -1627,6 +1795,15 @@ static void handle_event(SDL_Event *e) {
             simRate = nr;
             if (simRate > 4) say("TIME WARP: HOLDING HEADING, SPEED AND CLIMB. TAB / SHIFT+TAB TO CHANGE");
         }
+        else if (key == SDLK_k) { g_trackPanel = !g_trackPanel; if (!g_trackPanel && g_trackTyping) { g_trackTyping = false; SDL_StopTextInput(); } }
+        else if (key == SDLK_n) { tracker_cycle(watching && tracker_index() >= 0 ? g_traffic[tracker_index()].lat : FL.lat, watching && tracker_index() >= 0 ? g_traffic[tracker_index()].lon : FL.lon, shift ? -1 : 1); if (!g_ntraffic) say("NO TRAFFIC NEARBY YET"); }
+        else if (key == SDLK_DELETE || key == SDLK_BACKSPACE) { tracker_select(""); watching = false; }
+        else if (key == SDLK_j && !shift) {
+            if (watching) { watching = false; say("BACK IN YOUR AIRCRAFT"); }
+            else if (tracker_index() >= 0) { watching = true; camYaw = 0.6f; camPitch = 0.18f; camZoom = 1; say("WATCHING. YOUR AIRCRAFT WAITS. J TO RETURN"); }
+            else say("PICK AN AIRCRAFT FIRST: K FOR THE TRACKER, OR N");
+        }
+        else if (key == SDLK_j && shift) fly_with();
         else if (key == SDLK_l) { S.labels = !S.labels; say(S.labels ? "TRAFFIC LABELS ON" : "TRAFFIC LABELS OFF"); }
         else if (key == SDLK_t) { utcHours += shift ? -0.25 : 0.25; }
         else if (key == SDLK_BACKQUOTE) FL.throttle = 0;
@@ -1640,6 +1817,79 @@ static void handle_event(SDL_Event *e) {
 }
 
 /* ------------------------------------------------------------------ headless flight test */
+
+/* headless landing test: each aircraft flies a 3-degree final, flares, touches down and lets go of the stick
+ * (as the assisted controls did), then brakes.  Reports how hard it arrived and how much it bounced. */
+static void run_landing_test(bool assisted) {
+    int ri = -1, a = airport_find("KSFO");
+    if (a >= 0) for (int i = 0; i < g_airports[a].nrw; i++) if (!strcmp(g_runways[g_airports[a].rw0 + i].he, "28R")) ri = g_airports[a].rw0 + i;
+    if (ri < 0) { fprintf(stderr, "test: KSFO 28R missing\n"); return; }
+    holdInit = false; touchedDown = false; groundT = 0;
+    printf("%s\n%-18s %7s %7s %8s %8s %7s %7s %8s\n", assisted ? "ASSISTED, HANDS OFF FROM 10 M" : "TEST PILOT FLARE", "aircraft", "td fpm", "bounces", "max up m", "air s", "peak g", "pitch+", "stop m");
+    for (int ac = 0; ac < g_naircraft; ac++) {
+        const AircraftDef *d = &g_aircraft[ac];
+        double lat, lon; float brg, el;
+        runway_end(ri, 1, &lat, &lon, &brg, &el);
+        float vapp = flight_stall_speed(d, 1) * (d->flaps ? 1.3f : 1.5f);
+        double la, lo; geo_offset(lat, lon, brg + 180, 600, &la, &lo);      /* 600 m before the threshold, ~31 m up */
+        flight_reset(&FL, d, la, lo, el + 31.5f, brg, vapp, false);
+        if (d->flaps) { FL.flapsSet = d->flaps; FL.flaps = 1; }
+        FL.gearDown = FL.gearCmd = 1;
+        flight_trim(&FL, -3);
+        holdInit = false; groundT = 0; flareElev = 0; airTime = 30; gndWas = false; landingTouch = false; sinceTouch = 99; bounceHold = false;
+        float dt = 1.0f / 120, t = 0, tdT = -1, maxUp = 0, airAfter = 0, peakG = 0, pitchTd = 0, pitchMax = 0, vsTd = 0;
+        int bounces = 0; bool wasGround = false;
+        double tdLat = 0, tdLon = 0;
+        prevPitch = FL.pitch; prevBank = FL.bank;
+        float trimHold = FL.trim, elevHold = 0;
+        while (t < 90 && !FL.crashed) {
+            float pr = (FL.pitch - prevPitch) / dt, brr = (FL.bank - prevBank) / dt;
+            prevPitch = FL.pitch; prevBank = FL.bank;
+            FL.ail = clampf(-FL.bank * 0.05f - brr * 0.02f, -1, 1);
+            static float hPrev; float yrT = wrap180(FL.heading - hPrev) / dt; hPrev = FL.heading;
+            FL.rud = FL.onGround ? clampf(wrap180(brg - FL.heading) * 0.2f - yrT * 0.25f, -1, 1) : 0;
+            if (assisted && t > 0.2f && FL.agl < 10) {
+                /* the real assisted controls, hands off: they hold the attitude through touchdown and hand back */
+                if (!holdInit && !FL.onGround) airTime = 1;
+                assist = true;
+                flight_controls(dt);
+                if (tdT >= 0) { FL.throttle = 0; if (t - tdT > 2) FL.brake = fmaxf(FL.brake, FL.def->tricycle ? 0.55f : 0.22f); }
+            } else if (tdT < 0) {
+                /* approach: hold the path by pitch; flare from 9 m to arrive at about 150 fpm; ease the power off */
+                float fh = 9 + d->mass / 9000.0f;
+                float sinkT = FL.agl > fh ? -vapp * 0.0524f : -0.75f - FL.agl * (vapp * 0.0524f - 0.75f) / fh;
+                float zm = (d->gear[0].z + d->gear[1].z) * 0.5f, tailClear = atan2f(-d->gear[0].y, fmaxf(zm - d->bmin.z * 0.95f, 1)) / DEG;
+                float pitchT = fminf(FL.pitch + clampf((sinkT - FL.vs) * 2.0f, -3, 3), d->tricycle ? tailClear * 0.8f : 14);
+                FL.elev = clampf((pitchT - FL.pitch) * 0.07f - pr * 0.03f, -1, 1);
+                if (FL.agl < fh && !assisted) FL.throttle = fmaxf(FL.throttle - dt * 0.25f, 0);
+                FL.trim = trimHold; elevHold = FL.elev;
+            }
+            if (tdT >= 0) {
+                if (!FL.onGround) airAfter += dt;
+                maxUp = fmaxf(maxUp, FL.agl);
+                peakG = fmaxf(peakG, FL.gload);
+                pitchMax = fmaxf(pitchMax, FL.pitch - pitchTd);
+                if (FL.onGround && !wasGround) bounces++;
+                if (FL.gs < 1 && t - tdT > 5) break;
+            }
+            if (!assisted && tdT >= 0) {
+                /* after touchdown: power to idle and let go of the stick */
+                FL.throttle = 0;
+                float k = clampf((t - tdT) / 1.0f, 0, 1);
+                FL.elev = d->tricycle ? elevHold * (1 - k) : (FL.ias < vapp * 0.65f ? 0.7f : 0.0f); FL.trim = trimHold;
+                if (t - tdT > 3) FL.brake = d->tricycle ? 1.0f : 0.25f;
+            }
+            if (FL.onGround && tdT < 0) { tdT = t; vsTd = FL.lastTouchdownVs; pitchTd = FL.pitch; tdLat = FL.lat; tdLon = FL.lon; peakG = FL.gload; }
+            wasGround = FL.onGround;
+            if (getenv("WM_LTRACE") && !strcmp(d->id, getenv("WM_LTRACE")) && ((tdT >= 0 && t - tdT < 40 && (int)(t * 120) % 24 == 0) || (getenv("WM_LALL") && FL.agl < 14 && ((int)(t * 120) % 6 == 0)) || (getenv("WM_LALL") && ((int)(t * 120) % 60 == 0))))
+                printf("  t %.3f hdg %.1f bank %.1f ias %.1f agl %.2f vs %.2f g %.2f pitch %.2f strut %.3f %.3f %.3f c%d%d%d sp %.2f elev %.2f\n", t - tdT, FL.heading, FL.bank, FL.ias / KT, FL.agl, FL.vs, FL.gload, FL.pitch, FL.strut[0], FL.strut[1], FL.strut[2], FL.contact[0], FL.contact[1], FL.contact[2], FL.spoiler, FL.elev);
+            flight_step(&FL, dt);
+            t += dt;
+        }
+        printf("%-18s %7.0f %7d %8.2f %8.2f %7.2f %7.1f %8.0f%s%s\n", d->name, vsTd / FT * 60, bounces > 0 ? bounces - 1 : 0, maxUp, airAfter, peakG, pitchMax,
+               tdT >= 0 ? geo_dist(tdLat, tdLon, FL.lat, FL.lon) : -1, FL.crashed ? "  CRASH: " : "", FL.crashed ? FL.crashWhy : "");
+    }
+}
 static void run_flight_test(void) {
     int ri = -1, a = airport_find("KSFO");
     if (a >= 0) for (int i = 0; i < g_airports[a].nrw; i++) if (!strcmp(g_runways[g_airports[a].rw0 + i].he, "28R")) ri = g_airports[a].rw0 + i;
@@ -1707,6 +1957,7 @@ static void usage(void) {
            "  --cam N             0 chase 1 pilot 2 tail 3 orbit 4 tower 5 flyby\n"
            "  --view Y,P,Z        camera yaw and pitch in degrees, zoom factor\n"
            "  --pos LAT,LON[,ALT_M[,HDG]]  start in the air anywhere on Earth (poles included)\n"
+           "  --track HEX         track this aircraft (ICAO hex) as soon as it shows up; --watch to follow it, --tracker for the list\n"
            "  --map [ZOOM]        open the world map (for screenshots)\n"
            "  --offline           procedural world, no downloads\n"
            "  --windowed / --fullscreen, --size WxH, --detail F\n"
@@ -1720,7 +1971,7 @@ int main(int argc, char **argv) {
     const char *shot = NULL, *argAirport = NULL, *argRunway = NULL, *argAircraft = NULL;
     int maxFrames = 900, argChallenge = -1, argCam = -1;
     float argThrottle = -1;
-    bool fly = false, testFlight = false, forceWindowed = false;
+    bool fly = false, testFlight = false, testLanding = false, forceWindowed = false;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *n = i + 1 < argc ? argv[i + 1] : NULL;
         if (!strcmp(a, "--help") || !strcmp(a, "-h")) { usage(); return 0; }
@@ -1743,9 +1994,13 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--detail") && n) { S.detail = (float)atof(n); i++; }
         else if (!strcmp(a, "--shot") && n) { shot = n; i++; }
         else if (!strcmp(a, "--pos") && n) { argPos = sscanf(n, "%lf,%lf,%lf,%f", &posLat, &posLon, &posAlt, &posHdg); i++; }
+        else if (!strcmp(a, "--track") && n) { snprintf(argTrack, sizeof argTrack, "%s", n); i++; }
+        else if (!strcmp(a, "--watch")) argWatch = true;
+        else if (!strcmp(a, "--tracker")) g_trackPanel = true;
         else if (!strcmp(a, "--map")) { showMap = true; if (n && n[0] != '-') { mapZoom = atoi(n); i++; } }
         else if (!strcmp(a, "--frames") && n) { maxFrames = atoi(n); i++; }
         else if (!strcmp(a, "--test-flight")) testFlight = true;
+        else if (!strcmp(a, "--test-landing")) { testFlight = true; testLanding = true; }
         else if (!strcmp(a, "--throttle") && n) { argThrottle = (float)atof(n); i++; }
         else { fprintf(stderr, "wingmere: unknown option %s (try --help)\n", a); return 1; }
     }
@@ -1793,9 +2048,10 @@ int main(int argc, char **argv) {
     select_airport(api, argRunway ? argRunway : (argAirport ? NULL : cfgRunway));
 
     terrain_init();
-    if (testFlight) { run_flight_test(); return 0; }
+    if (testFlight) { if (testLanding) { run_landing_test(false); run_landing_test(true); } else run_flight_test(); return 0; }
     tiles_init();
-    traffic_init(); traffic_enable(S.traffic);
+    airframe_init(dataDir);
+    traffic_init(); traffic_enable(S.traffic); tracker_init();
     int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
     rc.w = dw; rc.h = dh;
     RenderCfg r0 = rc;
@@ -1841,7 +2097,8 @@ int main(int argc, char **argv) {
             int q, b, ok, fail; tiles_stats(&q, &b, &ok, &fail);
             if ((terrain_ready(FL.lat, FL.lon) && q + b < 8 && loadTimer > 1.5f) || loadTimer > 14) { state = ST_FLY; if (camMode == CAM_ORBIT) camMode = CAM_CHASE; }
         }
-        if (state == ST_FLY && !paused && !showHelp) {
+        if (watching && tracker_index() < 0 && g_track.hex[0] == 0) watching = false;
+        if (state == ST_FLY && !paused && !showHelp && !watching) {
             flight_controls(dt);
             if (simRate > 4 && (FL.onGround || FL.agl < 300 || FL.crashed || FL.stall)) { simRate = 1; say("TIME WARP OFF"); }
             float sdt = dt * simRate, pdt = dt * fminf(simRate, 4);
@@ -1859,7 +2116,12 @@ int main(int argc, char **argv) {
             flight_step(&FL, dt);       /* settle on the gear in the menu */
         }
         prevPitch = FL.pitch; prevBank = FL.bank;
-        traffic_update(FL.lat, FL.lon, dt);
+        {
+            int wi = watching ? tracker_index() : -1;
+            traffic_update(wi >= 0 ? g_traffic[wi].lat : FL.lat, wi >= 0 ? g_traffic[wi].lon : FL.lon, dt);
+            if (argTrack[0] && traffic_find(argTrack) >= 0) { tracker_select(argTrack); argTrack[0] = 0; if (argWatch) { watching = true; camYaw = 0.6f; camPitch = 0.15f; } }
+            tracker_frame();
+        }
         double hours = utcHours + simTime / 3600.0 + FL.lon / 15.0;
         render_set_time(FL.lat, FL.lon, (float)fmod(hours + 48, 24), doy);
         update_camera(dt);
@@ -1874,7 +2136,9 @@ int main(int argc, char **argv) {
         hud_begin();
         if (state == ST_FLY || state == ST_PAUSE) {
             if (showHud && !showMap) draw_traffic_labels();
-            if (showHud) draw_flight_hud();
+            if (showHud && !watching) draw_flight_hud();
+            if (!showMap && (g_trackPanel || g_track.hex[0])) tracker_draw(&cam, W, H, s_, FL.lat, FL.lon, watching);
+            if (watching) draw_watch_banner();
             if (showMap) draw_map();
             draw_result();
             if (showHelp) draw_help();
@@ -1893,7 +2157,7 @@ int main(int argc, char **argv) {
         if (shot) {
             int q, b, ok, fail; tiles_stats(&q, &b, &ok, &fail);
             quietFrames = (q + b == 0) ? quietFrames + 1 : 0;
-            bool trafficIn = !S.traffic || S.offline || g_ntraffic > 0 || frame > 400;
+            bool trafficIn = (!S.traffic || S.offline || (g_ntraffic > 0 && (!S.traffic_global || traffic_world(NULL, NULL) > 0)) || frame > 400) && (!g_track.hex[0] || g_track.state != 1 || frame > 500) && (!argTrack[0] || frame > 500);
             if ((frame > 120 && quietFrames > 45 && trafficIn) || frame >= maxFrames) {
                 render_screenshot(shot);
                 if (getenv("WINGMERE_DEBUG")) { double la, lo, h; ecef_to_geo(cam.pos, &la, &lo, &h); fprintf(stderr, "debug: plane alt %.1f agl %.1f  cam alt %.1f ground %.1f  fov %.2f  fwd %.2f %.2f %.2f\n", FL.alt, FL.agl, h, terrain_height(la, lo, NULL, NULL), cam.fov, cam.fwd.x, cam.fwd.y, cam.fwd.z); }

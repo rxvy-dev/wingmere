@@ -154,3 +154,24 @@ void hud_title(float x, float y, float size, const char *s, float r, float g, fl
     pm(c, 1, 0.85f, 0.8f, a * 0.5f);
     glyph_lines(x, y, size, s, align, size * 0.035f, c, 0);
 }
+
+/* a picture (sRGB texture) in screen space, e.g. a photo of the tracked aircraft */
+void hud_image(unsigned tex, float x, float y, float w, float h) {
+    static GLuint ivao, ivbo;
+    flush();
+    if (!ivao) {
+        glGenVertexArrays(1, &ivao); glBindVertexArray(ivao); glGenBuffers(1, &ivbo); glBindBuffer(GL_ARRAY_BUFFER, ivbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 24, NULL, GL_DYNAMIC_DRAW);
+        glEnableVertexAttribArray(0); glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, (void *)0);
+        glEnableVertexAttribArray(1); glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, (void *)8);
+    }
+    float q[24] = {x, y, 0, 0, x + w, y, 1, 0, x + w, y + h, 1, 1, x, y, 0, 0, x + w, y + h, 1, 1, x, y + h, 0, 1};
+    glUseProgram(g_progMap);
+    glUniform2f(glGetUniformLocation(g_progMap, "uRes"), (float)g_w, (float)g_h);
+    glUniform1i(glGetUniformLocation(g_progMap, "uTex"), 0);
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex);
+    glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND);
+    glBindVertexArray(ivao); glBindBuffer(GL_ARRAY_BUFFER, ivbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof q, q);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+}

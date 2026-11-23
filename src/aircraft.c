@@ -51,7 +51,7 @@ static void parse_cfg(AircraftDef *a, const char *path) {
         else if (!strncmp(k, "pilot", 5) && k[5] >= '0' && k[5] <= '3') { int i = k[5] - '0'; sscanf(v, "%f %f %f", &a->pilot[i].x, &a->pilot[i].y, &a->pilot[i].z); if (i + 1 > a->npilot) a->npilot = i + 1; }
         F(mass) F(wing_area) F(chord) F(span) F(length) F(height) F(cl0) F(cla) F(alpha_stall) F(clmax) F(cd0) F(k) F(thrust) F(prop_v)
         F(flap_cl) F(flap_cd) F(gear_cd) F(cm_alpha) F(cm_de) F(cm_q) F(cl_da) F(cl_p) F(cl_beta) F(cn_beta) F(cn_dr) F(cn_r)
-        F(ixx) F(iyy) F(izz) F(v_rotate) F(v_cruise) F(vne) F(cam_dist) F(afterburner)
+        F(ixx) F(iyy) F(izz) F(stroke) F(gear_limit) F(v_rotate) F(v_cruise) F(vne) F(cam_dist) F(afterburner)
         I(pax)
         I(flaps) I(retract) I(tricycle)
 #undef F

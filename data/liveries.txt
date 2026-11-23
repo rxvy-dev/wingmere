@@ -1,0 +1,94 @@
+# WINGMERE airline colour schemes for live traffic, keyed by the ICAO airline code at the start of the callsign.
+# Colours only: no logos, names or titles (those are the airlines' trademarks). Approximate - edit to taste.
+#
+# code  body    belly   beltline cheat   tail    tail2   tail3   style engine  rear nose    nosepart
+#  beltline: where the belly colour ends, -1 (bottom, none) .. 1 (top); cheat: '-' for none
+#  style: 0 solid tail, 1 lower band in tail2, 2 diagonal split tail/tail2, 3 bands tail/tail2/tail3
+#  rear: 1 if the tail colour sweeps onto the rear fuselage; nose: '-' or a colour for the nose, nosepart how far back (0..1)
+AAL  C6CBD0  C6CBD0  -1.0  -       0078D2  C30019  FFFFFF  3  C6CBD0  0  -       0
+UAL  FFFFFF  0033A0  -0.25 -       0033A0  0033A0  1A5BD8  0  0033A0  0  -       0
+DAL  FFFFFF  003A70  -0.30 -       C8102E  8B0B21  003A70  2  003A70  0  -       0
+SWA  304CB2  C3C8CE  -0.10 -       304CB2  F9B612  E31837  1  304CB2  0  -       0
+BAW  FFFFFF  1D2B5E  -0.35 -       1D2B5E  C8102E  FFFFFF  3  C6CBD0  0  -       0
+DLH  FFFFFF  FFFFFF  -1.0  -       05164D  05164D  05164D  0  05164D  0  -       0
+AFR  FFFFFF  FFFFFF  -1.0  -       FFFFFF  002157  CC0000  3  FFFFFF  0  -       0
+KLM  00A1DE  FFFFFF  -0.30 FFFFFF  00A1DE  00A1DE  FFFFFF  0  00A1DE  0  -       0
+UAE  FFFFFF  FFFFFF  -1.0  -       FFFFFF  D71921  00843D  3  FFFFFF  0  -       0
+QTR  FFFFFF  FFFFFF  -1.0  -       5C0632  5C0632  5C0632  0  B8BCC0  1  -       0
+ETD  F4EFE6  F4EFE6  -1.0  -       B49A66  7A5C2E  D9C79E  2  B49A66  0  -       0
+SIA  FFFFFF  FFFFFF  -1.0  1A2A5E  1A2A5E  1A2A5E  F2B417  1  1A2A5E  0  -       0
+CPA  FFFFFF  A7A9AC  -0.40 -       006564  006564  FFFFFF  0  C6CBD0  0  -       0
+JAL  FFFFFF  FFFFFF  -1.0  -       FFFFFF  CC0000  CC0000  1  FFFFFF  0  -       0
+ANA  FFFFFF  FFFFFF  -1.0  0099DE  13448F  0099DE  13448F  1  13448F  0  -       0
+ACA  FFFFFF  111111  -0.45 -       111111  111111  D8262E  0  111111  0  -       0
+WJA  FFFFFF  FFFFFF  -1.0  -       0B3C49  1F8094  0B3C49  2  0B3C49  0  -       0
+RYR  FFFFFF  073590  -0.45 -       073590  073590  F1C933  0  073590  0  -       0
+EZY  FFFFFF  FFFFFF  -1.0  -       FF6600  FF6600  FFFFFF  0  FF6600  0  -       0
+WZZ  FFFFFF  FFFFFF  -1.0  -       C6007E  2C2A5E  C6007E  2  C6007E  0  -       0
+IBE  FFFFFF  FFFFFF  -1.0  -       D7192D  FFCC00  D7192D  2  D7192D  0  -       0
+THY  FFFFFF  FFFFFF  -1.0  -       C8102E  C8102E  FFFFFF  0  C6CBD0  0  -       0
+SAS  C4CED6  C4CED6  -1.0  -       000A8F  000A8F  000A8F  0  000A8F  0  -       0
+FIN  FFFFFF  FFFFFF  -1.0  -       FFFFFF  0B1560  0B1560  1  FFFFFF  0  -       0
+AUA  FFFFFF  FFFFFF  -1.0  -       E3001B  FFFFFF  E3001B  3  E3001B  0  -       0
+SWR  FFFFFF  FFFFFF  -1.0  -       E30613  E30613  E30613  0  C6CBD0  0  -       0
+ASA  FFFFFF  FFFFFF  -1.0  00838F  01426A  00838F  01426A  2  01426A  0  -       0
+QXE  FFFFFF  FFFFFF  -1.0  00838F  01426A  00838F  01426A  2  01426A  0  -       0
+JBU  FFFFFF  003876  -0.40 -       0033A0  1A82E2  0033A0  3  0033A0  0  -       0
+NKS  FFEC00  FFEC00  -1.0  -       FFEC00  FFEC00  111111  0  FFEC00  0  -       0
+FFT  FFFFFF  FFFFFF  -1.0  -       00A859  006A39  00A859  2  00A859  0  -       0
+HAL  FFFFFF  FFFFFF  -1.0  -       413691  C7006D  413691  2  C6CBD0  0  -       0
+FDX  FFFFFF  FFFFFF  -1.0  -       4D148C  4D148C  FF6600  0  C6CBD0  1  -       0
+UPS  5F4130  FFFFFF  -0.40 FFB500  5F4130  FFB500  5F4130  1  5F4130  0  -       0
+CCA  FFFFFF  FFFFFF  -1.0  -       FFFFFF  D2001E  D2001E  1  FFFFFF  0  -       0
+CES  FFFFFF  FFFFFF  -1.0  003D7D  B9001E  003D7D  B9001E  1  FFFFFF  0  -       0
+CSN  FFFFFF  FFFFFF  -1.0  -       2EA7E0  2EA7E0  D2001E  0  FFFFFF  0  -       0
+KAL  9ACDEB  C3C8CE  -0.10 FFFFFF  FFFFFF  CD2E3A  0047A0  3  9ACDEB  0  -       0
+AAR  E9E9EB  E9E9EB  -1.0  -       9E9E9E  E5B53D  C8102E  3  9E9E9E  0  -       0
+QFA  FFFFFF  FFFFFF  -1.0  -       E40000  E40000  E40000  0  FFFFFF  1  -       0
+VIR  E3E6E9  E3E6E9  -1.0  -       E10A0A  6C2B85  E10A0A  2  E10A0A  0  -       0
+TAP  FFFFFF  FFFFFF  -1.0  -       00965E  C8102E  00965E  2  FFFFFF  0  -       0
+EIN  FFFFFF  006272  -0.40 -       006272  006272  6FB23F  0  006272  0  -       0
+ICE  FFFFFF  00285E  -0.45 -       00285E  00285E  F2B417  0  00285E  0  -       0
+NAX  FFFFFF  FFFFFF  -1.0  -       D81939  D81939  D81939  0  FFFFFF  0  D81939  0.12
+NOZ  FFFFFF  FFFFFF  -1.0  -       D81939  D81939  D81939  0  FFFFFF  0  D81939  0.12
+VLG  FFFFFF  FFFFFF  -1.0  -       FFCC00  6D6E71  FFCC00  2  6D6E71  0  -       0
+EWG  FFFFFF  FFFFFF  -1.0  -       A9005C  5A0F3C  A9005C  2  FFFFFF  0  -       0
+LOT  FFFFFF  FFFFFF  -1.0  -       11397E  11397E  11397E  0  FFFFFF  0  -       0
+AFL  FFFFFF  FFFFFF  -1.0  0039A6  FFFFFF  0039A6  D52B1E  3  C6CBD0  0  -       0
+ETH  FFFFFF  FFFFFF  -1.0  -       078930  FCDD09  DA121A  3  FFFFFF  0  -       0
+SAA  FFFFFF  FFFFFF  -1.0  -       007A4D  FFB612  DE3831  3  FFFFFF  0  -       0
+LAN  FFFFFF  1B0088  -0.45 -       1B0088  ED1650  1B0088  2  1B0088  0  -       0
+TAM  FFFFFF  1B0088  -0.45 -       1B0088  ED1650  1B0088  2  1B0088  0  -       0
+AVA  DA291C  DA291C  -1.0  -       DA291C  DA291C  FFFFFF  0  DA291C  0  -       0
+CMP  FFFFFF  FFFFFF  -1.0  -       00205B  B49A5B  00205B  2  FFFFFF  0  -       0
+AMX  FFFFFF  0B2343  -0.40 -       0B2343  0B2343  B5121B  0  0B2343  0  -       0
+VOI  FFFFFF  FFFFFF  -1.0  -       A12A8C  5C1E5B  A12A8C  2  A12A8C  0  -       0
+GLO  FFFFFF  FFFFFF  -1.0  -       FF6A00  FF6A00  FFFFFF  0  FF6A00  0  -       0
+AZU  FFFFFF  003C71  -0.40 -       003C71  003C71  1A82E2  0  003C71  0  -       0
+SVA  FFFFFF  BFA77A  -0.45 -       1B5E9B  BFA77A  1B5E9B  1  FFFFFF  0  -       0
+MSR  FFFFFF  FFFFFF  -1.0  -       0B2A5C  0B2A5C  C8102E  0  FFFFFF  0  -       0
+IGO  FFFFFF  FFFFFF  -1.0  -       001B94  001B94  001B94  0  001B94  0  -       0
+AIC  FFFFFF  FFFFFF  -1.0  -       DA0E29  8D1B4E  C49A3B  2  DA0E29  0  -       0
+ANZ  FFFFFF  FFFFFF  -1.0  -       111111  111111  111111  0  111111  1  -       0
+JST  CFD2D6  CFD2D6  -1.0  -       FF5115  111111  FF5115  2  CFD2D6  0  -       0
+EVA  FFFFFF  FFFFFF  -1.0  F68B1F  00704A  00704A  F68B1F  0  00704A  0  -       0
+CAL  FFFFFF  FFFFFF  -1.0  -       FFFFFF  E8829B  1C3E8C  3  FFFFFF  0  -       0
+THA  FFFFFF  FFFFFF  -1.0  -       5C2D91  C8102E  D4A017  2  FFFFFF  0  -       0
+MAS  FFFFFF  FFFFFF  -1.0  -       FFFFFF  CC0000  003399  3  FFFFFF  0  -       0
+GIA  FFFFFF  FFFFFF  -1.0  -       00A3AD  1D3F6E  00A3AD  2  FFFFFF  0  -       0
+HVN  FFFFFF  FFFFFF  -1.0  -       006885  006885  D4A017  0  FFFFFF  0  -       0
+PAL  FFFFFF  FFFFFF  -1.0  -       0038A8  CE1126  FCD116  3  FFFFFF  0  -       0
+AAY  FFFFFF  FFFFFF  -1.0  -       F2A900  0B2A5C  F2A900  2  FFFFFF  0  -       0
+SKW  FFFFFF  C6CBD0  -0.45 -       C6CBD0  5F6870  C6CBD0  2  C6CBD0  0  -       0
+RPA  FFFFFF  C6CBD0  -0.45 -       C6CBD0  5F6870  C6CBD0  2  C6CBD0  0  -       0
+# mainline schemes worn by regional partners
+ENY  =AAL
+JIA  =AAL
+PDT  =AAL
+EDV  =DAL
+ASH  =UAL
+GJS  =UAL
+CPZ  =UAL
+# when nothing is known: plain white with a grey belly; military: low-visibility grey
+DEFAULT  FFFFFF  C6CBD0  -0.55 -   FFFFFF  C6CBD0  FFFFFF  1  C6CBD0  0  -       0
+MIL      7C8790  6E7983  -1.0  -   6E7983  6E7983  6E7983  0  6E7983  0  -       0

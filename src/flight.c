@@ -27,6 +27,17 @@ void flight_auto_trim(Flight *f) {
     f->trim = clampf(-de / 0.35f, -0.8f, 0.8f);
 }
 
+/* how much of the weight each wheel carries, from where the wheels are relative to the centre of gravity */
+static float wheel_share(const AircraftDef *a, int i) {
+    float zm = (a->gear[0].z + a->gear[1].z) * 0.5f, zn = a->gear[2].z;
+    float fn = fabsf(zm - zn) > 0.1f ? clampf(zm / (zm - zn), 0.04f, 0.4f) : 0.1f;
+    return i == 2 ? fn : (1 - fn) * 0.5f;
+}
+
+/* strut travel, and an air spring that is soft at first and stiffens hard near the end of its travel */
+static float stroke_of(const AircraftDef *a) { return a->stroke > 0 ? a->stroke : clampf(0.2f + a->mass / 150000.0f, 0.2f, 0.62f); }   /* strut plus tyre */
+static float gas_spring(float x, float S) { float v0 = S * 1.18f; return powf(v0 / fmaxf(v0 - x, 0.02f), 1.3f) - 1; }
+
 static float lowest_gear(const AircraftDef *a, quat rot, v3 up) {
     float lo = 1e9f;
     for (int i = 0; i < 3; i++) lo = fminf(lo, vdot(q_rot(rot, a->gear[i]), up));
@@ -129,7 +140,8 @@ static void substep(Flight *f, float h) {
     f->stall = aa > as && Vv > 8 && !f->onGround;
     float mach = Vv / sound_speed(alt), mcrit = a->jet ? 0.74f : 0.64f;
     float wave = mach > mcrit ? 20 * powf(mach - mcrit, 4) + 0.6f * powf(fmaxf(mach - mcrit - 0.06f, 0), 2) : 0;   /* transonic drag rise */
-    float CD = a->cd0 + wave + a->k * CL * CL + a->flap_cd * fl + a->gear_cd * f->gearDown + (aa > as ? 1.0f * sinf(aa) * sinf(aa) : 0) + 0.5f * fabsf(sinf(beta));
+    CL *= 1 - 0.6f * f->spoiler;                    /* ground spoilers dump the lift once the mains are down */
+    float CD = 0.07f * f->spoiler + a->cd0 + wave + a->k * CL * CL + a->flap_cd * fl + a->gear_cd * f->gearDown + (aa > as ? 1.0f * sinf(aa) * sinf(aa) : 0) + 0.5f * fabsf(sinf(beta));
     v3 vhat = Vv > 0.1f ? vmul(vel, 1 / Vv) : F;
     v3 Ld = Vv > 0.1f ? vnorm(vcross(Rt, vhat)) : Up;
     v3 force = vadd(vmul(Ld, CL * qd * S), vmul(vhat, -CD * qd * S));
@@ -156,7 +168,7 @@ static void substep(Flight *f, float h) {
     v3 torque = V(0, 0, 0);
     bool ground = false;
     int wheels = 0;
-    float crashVs = a->jet ? 5.2f : 5.6f;   /* ~1000 fpm: only a real arrival breaks the gear */
+    float crashVs = a->gear_limit > 0 ? a->gear_limit : (a->jet ? 5.2f : 5.6f);   /* ~1000 fpm: only a real arrival breaks the gear */
     float cl = cosf((float)(lat * M_PI / 180));
     bool gearOut = !a->retract || f->gearDown > 0.95f;
     for (int i = 0; i < 3 && gearOut; i++) {
@@ -165,8 +177,15 @@ static void substep(Flight *f, float h) {
         double walt = alt + vdot(rr, u);
         bool water = false, rw = false;
         float gh = terrain_height(wlat, wlon, &water, &rw);
+        /* when the terrain under a rolling wheel jumps (a sharper elevation tile arriving), ease into the new
+         * height instead of launching the aeroplane off a step that is not really there */
+        if (f->contact[i] && fabsf(gh - f->gh[i]) > 0.0f) {
+            float lim = (3.0f + 0.05f * vlen(f->vel)) * h;
+            if (fabsf(gh - f->gh[i]) < 20) gh = f->gh[i] + clampf(gh - f->gh[i], -lim, lim);
+        }
+        f->gh[i] = gh;
         float depth = (float)(gh - walt);
-        if (depth <= 0) { f->contact[i] = false; continue; }
+        if (depth + stroke_of(a) * 0.6f <= 0) { f->contact[i] = false; f->strut[i] = 0; continue; }
         v3 vp = vadd(f->vel, vcross(f->omega, rr));   /* wheels care about ground speed */
         float vn = vdot(vp, u);
         if (water && vlen(f->vel) > 3) { crash(f, "DITCHED IN THE WATER"); return; }
@@ -175,18 +194,36 @@ static void substep(Flight *f, float h) {
             if (i < 2 && !f->contact[0] && !f->contact[1]) { f->lastTouchdownVs = vn; f->touchdowns++; audio_event(1); }
         }
         f->contact[i] = true;
-        float share = a->mass / 3, k = a->mass * 9.81f / (3 * 0.12f), c = 2 * 0.95f * sqrtf(k * share);   /* well damped: no bouncing */
-        float Fn = fmaxf(k * depth - c * vn, 0);
+        /* Oleo-pneumatic strut.  Each wheel carries its real share of the weight (the nose or tail wheel
+         * takes about a tenth), sits about a third of the way into a long stroke, and the oil damps hard:
+         * firm but progressive on the way in, very stiff on the way out, so arrivals are soaked up instead
+         * of springing the aeroplane back into the air. */
+        float share = a->mass * wheel_share(a, i), Wi = share * 9.81f;
+        float S = stroke_of(a), x0 = S * 0.6f;              /* the model's wheel sits at the loaded ride height */
+        float x = fminf(depth + x0, S), over = fmaxf(depth + x0 - S, 0);
+        float Fs = Wi * gas_spring(x, S) / gas_spring(x0, S);
+        float vc = -vn;                                      /* closing speed, + when compressing */
+        float kk = Wi / x0;
+        float Fd = vc > 0 ? 2 * 0.12f * sqrtf(kk * share) * vc + 1.1f * Wi * vc * vc / 9.0f      /* oil through the orifice */
+                          : 2 * 1.2f * sqrtf(kk * share) * vc - 4.0f * Wi * vc * vc / 9.0f;     /* and much slower back out */
+        float Fb = over > 0 ? kk * 6 * over - 2 * sqrtf(kk * 6 * share) * vn : 0;   /* bottomed out: hard stop */
+        float Fn = fmaxf(Fs + Fd + Fb, 0);
+        f->strut[i] = x;
         v3 wf = vnorm(vsub(F, vmul(u, vdot(F, u)))), side = vcross(wf, u);
         if (i == 2) {
-            float steer = f->rud * (a->tricycle ? 55 : 25) * DEG * clampf(1 - Vv / 35, 0.12f, 1);
+            /* a tailwheel sits behind the centre of gravity, so it steers the opposite way to a nosewheel */
+            float steer = f->rud * (a->tricycle ? 55 : -25) * DEG * clampf(1 - Vv / 35, 0.12f, 1);
             v3 w2 = vadd(vmul(wf, cosf(steer)), vmul(side, sinf(steer)));
             side = vcross(w2, u); wf = w2;
         }
         float vf = vdot(vp, wf), vs = vdot(vp, side);
         float mu = 0.02f + (i < 2 ? f->brake * 0.65f : 0);
         float fr = -signf(vf) * fminf(mu * Fn, fabsf(vf) * share / h);
-        float fs = -signf(vs) * fminf(0.85f * Fn, fabsf(vs) * share / h);
+        /* tyre cornering: side force grows with the slip angle and saturates near 8 degrees, instead of
+         * gluing the wheel to its track; at walking pace it simply stops any sideways creep */
+        float sp = sqrtf(vf * vf + vs * vs), fs;
+        if (sp > 2.5f) { float slip = atan2f(vs, fabsf(vf)); fs = -0.8f * Fn * clampf(slip / (8 * DEG), -1, 1); }
+        else fs = -signf(vs) * fminf(0.85f * Fn, fabsf(vs) * share / h);
         v3 fw = vadd(vmul(u, Fn), vadd(vmul(wf, fr), vmul(side, fs)));
         force = vadd(force, fw);
         torque = vadd(torque, vcross(rr, fw));
@@ -196,6 +233,7 @@ static void substep(Flight *f, float h) {
     v3 body[6] = {V(0, 0, a->bmax.z), V(0, 0, a->bmin.z * 0.95f), V(a->span * 0.48f, 0, 0), V(-a->span * 0.48f, 0, 0),
                   V(0, a->gear[0].y + a->height * (gearOut ? 0.08f : 0.1f), 0), V(0, a->bmax.y * 0.9f, a->bmin.z * 0.9f)};
     for (int i = 0; i < 6; i++) {
+        if (i == 1 && !a->tricycle) continue;      /* a taildragger's tail sits on its tailwheel */
         v3 rr = q_rot(f->rot, body[i]);
         double blat = lat + vdot(rr, n) / 111320.0, blon = lon + vdot(rr, e) / (111320.0 * fmax(cl, 0.01));
         float gh = terrain_height(blat, blon, NULL, NULL);
@@ -231,6 +269,12 @@ void flight_step(Flight *f, float dt) {
     int n = (int)ceilf(dt * 240);
     n = n < 1 ? 1 : (n > 24 ? 24 : n);
     for (int i = 0; i < n && !f->crashed; i++) substep(f, dt / n);
+    /* ground spoilers (airliners and transports): out when both mains are on the ground with the power at idle */
+    bool mains = f->contact[0] && f->contact[1];
+    f->mainsT = mains ? f->mainsT + dt : 0;
+    bool hasSpoilers = a->tricycle && a->mass > 15000;
+    float spT = hasSpoilers && f->mainsT > 0.15f && f->throttle < 0.3f && f->gs > 8 ? 1.0f : 0.0f;
+    f->spoiler += clampf(spT - f->spoiler, -dt / 1.5f, dt / 0.8f);
     /* readouts */
     v3 F = q_rot(f->rot, V(0, 0, 1)), Up = q_rot(f->rot, V(0, 1, 0)), Rt = vcross(F, Up);
     float Vv = vlen(vsub(f->vel, f->wind));

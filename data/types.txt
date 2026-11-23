@@ -1,0 +1,138 @@
+# WINGMERE airframe table: live-traffic aircraft are built from these real dimensions.
+# ICAO  length span  fuselage  engines  wing  tail  winglet  name
+#       (metres)     diameter  W2 W4 = under the wings, R2 R3 = on the rear fuselage, T3 = two on the wings + one in the fin,
+#                              P1 = nose propeller, P2 P4 = propellers on the wings
+#                    wing L low / H high, tail C conventional / T T-tail, winglet 0 none 1 up 2 blended 3 raked, extra: h hump, d double deck
+A318  31.4  34.1  3.95  W2  L  C  1  Airbus A318
+A319  33.8  35.8  3.95  W2  L  C  1  Airbus A319
+A320  37.6  35.8  3.95  W2  L  C  1  Airbus A320
+A321  44.5  35.8  3.95  W2  L  C  1  Airbus A321
+A19N  33.8  35.8  3.95  W2  L  C  2  Airbus A319neo
+A20N  37.6  35.8  3.95  W2  L  C  2  Airbus A320neo
+A21N  44.5  35.8  3.95  W2  L  C  2  Airbus A321neo
+A332  58.8  60.3  5.64  W2  L  C  1  Airbus A330-200
+A333  63.7  60.3  5.64  W2  L  C  1  Airbus A330-300
+A338  58.8  64.0  5.64  W2  L  C  2  Airbus A330-800neo
+A339  63.7  64.0  5.64  W2  L  C  2  Airbus A330-900neo
+A342  59.4  60.3  5.64  W4  L  C  1  Airbus A340-200
+A343  63.7  60.3  5.64  W4  L  C  1  Airbus A340-300
+A345  67.9  63.5  5.64  W4  L  C  1  Airbus A340-500
+A346  75.3  63.5  5.64  W4  L  C  1  Airbus A340-600
+A359  66.8  64.8  5.96  W2  L  C  2  Airbus A350-900
+A35K  73.8  64.8  5.96  W2  L  C  2  Airbus A350-1000
+A388  72.7  79.8  7.14  W4  L  C  1  Airbus A380-800  d
+A306  54.1  44.8  5.64  W2  L  C  0  Airbus A300-600
+A310  46.7  43.9  5.64  W2  L  C  1  Airbus A310
+A3ST  56.2  44.8  7.70  W2  L  C  0  Airbus Beluga  h
+BCS1  35.0  35.1  3.70  W2  L  C  0  Airbus A220-100
+BCS3  38.7  35.1  3.70  W2  L  C  0  Airbus A220-300
+B712  37.8  28.4  3.35  R2  L  T  0  Boeing 717
+B732  30.5  28.3  3.76  W2  L  C  0  Boeing 737-200
+B733  33.4  28.9  3.76  W2  L  C  0  Boeing 737-300
+B734  36.4  28.9  3.76  W2  L  C  0  Boeing 737-400
+B735  31.0  28.9  3.76  W2  L  C  0  Boeing 737-500
+B736  31.2  34.3  3.76  W2  L  C  2  Boeing 737-600
+B737  33.6  34.3  3.76  W2  L  C  2  Boeing 737-700
+B738  39.5  35.8  3.76  W2  L  C  2  Boeing 737-800
+B739  42.1  35.8  3.76  W2  L  C  2  Boeing 737-900
+B37M  35.6  35.9  3.76  W2  L  C  2  Boeing 737 MAX 7
+B38M  39.5  35.9  3.76  W2  L  C  2  Boeing 737 MAX 8
+B39M  42.2  35.9  3.76  W2  L  C  2  Boeing 737 MAX 9
+B3XM  43.8  35.9  3.76  W2  L  C  2  Boeing 737 MAX 10
+B722  46.7  32.9  3.76  R3  L  T  0  Boeing 727-200
+B742  70.7  59.6  6.50  W4  L  C  0  Boeing 747-200  h
+B744  70.7  64.4  6.50  W4  L  C  1  Boeing 747-400  h
+B748  76.3  68.4  6.50  W4  L  C  3  Boeing 747-8  h
+B752  47.3  38.1  3.76  W2  L  C  1  Boeing 757-200
+B753  54.4  38.1  3.76  W2  L  C  1  Boeing 757-300
+B762  48.5  47.6  5.03  W2  L  C  0  Boeing 767-200
+B763  54.9  47.6  5.03  W2  L  C  1  Boeing 767-300
+B764  61.4  51.9  5.03  W2  L  C  3  Boeing 767-400
+B772  63.7  60.9  6.20  W2  L  C  0  Boeing 777-200
+B77L  63.7  64.8  6.20  W2  L  C  3  Boeing 777-200LR
+B773  73.9  60.9  6.20  W2  L  C  0  Boeing 777-300
+B77W  73.9  64.8  6.20  W2  L  C  3  Boeing 777-300ER
+B778  70.9  71.8  6.20  W2  L  C  3  Boeing 777-8
+B779  76.7  71.8  6.20  W2  L  C  3  Boeing 777-9
+B788  56.7  60.1  5.77  W2  L  C  3  Boeing 787-8
+B789  62.8  60.1  5.77  W2  L  C  3  Boeing 787-9
+B78X  68.3  60.1  5.77  W2  L  C  3  Boeing 787-10
+MD11  61.6  51.7  6.02  T3  L  C  1  McDonnell Douglas MD-11
+DC10  55.5  50.4  6.02  T3  L  C  0  McDonnell Douglas DC-10
+MD82  45.1  32.9  3.35  R2  L  T  0  McDonnell Douglas MD-82
+MD83  45.1  32.9  3.35  R2  L  T  0  McDonnell Douglas MD-83
+MD88  45.1  32.9  3.35  R2  L  T  0  McDonnell Douglas MD-88
+MD90  46.5  32.9  3.35  R2  L  T  0  McDonnell Douglas MD-90
+E170  29.9  26.0  3.01  W2  L  C  1  Embraer 170
+E75L  31.7  28.7  3.01  W2  L  C  1  Embraer 175
+E75S  31.7  26.0  3.01  W2  L  C  1  Embraer 175
+E190  36.2  28.7  3.01  W2  L  C  1  Embraer 190
+E195  38.7  28.7  3.01  W2  L  C  1  Embraer 195
+E290  36.2  33.7  3.01  W2  L  C  3  Embraer 190-E2
+E295  41.5  35.1  3.01  W2  L  C  3  Embraer 195-E2
+E135  26.3  20.0  2.28  R2  L  T  0  Embraer 135
+E145  29.9  20.0  2.28  R2  L  T  1  Embraer 145
+CRJ2  26.8  21.2  2.69  R2  L  T  1  Bombardier CRJ200
+CRJ7  32.5  23.2  2.69  R2  L  T  1  Bombardier CRJ700
+CRJ9  36.4  24.9  2.69  R2  L  T  1  Bombardier CRJ900
+CRJX  39.1  26.2  2.69  R2  L  T  1  Bombardier CRJ1000
+AT43  22.7  24.6  2.57  P2  H  T  0  ATR 42
+AT45  22.7  24.6  2.57  P2  H  T  0  ATR 42-500
+AT72  27.2  27.1  2.57  P2  H  T  0  ATR 72
+AT75  27.2  27.1  2.57  P2  H  T  0  ATR 72-500
+AT76  27.2  27.1  2.57  P2  H  T  0  ATR 72-600
+DH8A  22.3  25.9  2.69  P2  H  T  0  Dash 8-100
+DH8B  22.3  25.9  2.69  P2  H  T  0  Dash 8-200
+DH8C  25.7  27.4  2.69  P2  H  T  0  Dash 8-300
+DH8D  32.8  28.4  2.69  P2  H  T  0  Dash 8-400
+SF34  19.7  21.4  2.31  P2  L  C  0  Saab 340
+JS41  19.3  18.3  2.10  P2  L  C  0  Jetstream 41
+B190  17.6  17.7  1.80  P2  L  T  0  Beechcraft 1900
+BE20  13.3  16.6  1.60  P2  L  T  0  King Air 200
+BE9L  10.8  15.3  1.50  P2  L  C  0  King Air 90
+C208  11.5  15.9  1.70  P1  H  C  0  Cessna Caravan
+PC12  14.4  16.3  1.70  P1  L  T  1  Pilatus PC-12
+C172   8.3  11.0  1.10  P1  H  C  0  Cessna 172
+C182   8.8  11.0  1.15  P1  H  C  0  Cessna 182
+C152   7.3  10.1  1.00  P1  H  C  0  Cessna 152
+PA28   7.3  10.7  1.10  P1  L  C  0  Piper Cherokee
+P28A   7.3  10.7  1.10  P1  L  C  0  Piper Cherokee
+SR20   7.9  11.7  1.25  P1  L  C  0  Cirrus SR20
+SR22   7.9  11.7  1.25  P1  L  C  0  Cirrus SR22
+DA40   8.0  11.9  1.15  P1  L  T  0  Diamond DA40
+DA42   8.6  13.4  1.15  P2  L  T  0  Diamond DA42
+BE36   8.4  10.2  1.25  P1  L  C  0  Beechcraft Bonanza
+M20P   7.5  11.0  1.10  P1  L  C  0  Mooney M20
+TBM9  10.7  12.8  1.40  P1  L  C  1  Daher TBM 900
+C25A  14.4  15.5  1.60  R2  L  C  0  Cessna Citation CJ2
+C25B  15.6  15.5  1.60  R2  L  C  0  Cessna Citation CJ3
+C25C  16.3  15.5  1.60  R2  L  C  0  Cessna Citation CJ4
+C56X  15.8  16.5  1.75  R2  L  C  1  Cessna Citation Excel
+C68A  19.4  22.0  1.90  R2  L  T  0  Cessna Citation Latitude
+C700  21.3  21.0  2.10  R2  L  T  1  Cessna Citation Longitude
+E55P  15.6  16.2  1.80  R2  L  T  1  Embraer Phenom 300
+E50P  12.8  12.3  1.60  R2  L  T  0  Embraer Phenom 100
+LJ45  17.7  14.6  1.65  R2  L  T  1  Learjet 45
+CL30  20.9  19.5  2.20  R2  L  T  1  Challenger 300
+CL35  20.9  19.5  2.20  R2  L  T  1  Challenger 350
+CL60  20.9  19.6  2.50  R2  L  T  1  Challenger 600
+GLF4  26.9  23.7  2.40  R2  L  T  1  Gulfstream IV
+GLF5  29.4  28.5  2.40  R2  L  T  1  Gulfstream V
+GLF6  30.4  30.4  2.60  R2  L  T  1  Gulfstream G650
+G280  20.3  19.2  2.20  R2  L  T  1  Gulfstream G280
+GLEX  30.3  28.7  2.70  R2  L  T  1  Bombardier Global Express
+GL5T  29.5  28.7  2.70  R2  L  T  1  Bombardier Global 5000
+GL7T  33.8  31.7  2.70  R2  L  T  1  Bombardier Global 7500
+FA7X  23.2  26.2  2.40  R3  L  C  1  Dassault Falcon 7X
+FA8X  24.5  26.3  2.40  R3  L  C  1  Dassault Falcon 8X
+F900  20.2  19.3  2.40  R3  L  C  1  Dassault Falcon 900
+F2TH  20.2  19.3  2.40  R2  L  C  1  Dassault Falcon 2000
+PC24  16.9  17.0  1.80  R2  L  T  0  Pilatus PC-24
+C130  29.8  40.4  4.30  P4  H  C  0  Lockheed C-130 Hercules
+C30J  29.8  40.4  4.30  P4  H  C  0  Lockheed C-130J
+A400  45.1  42.4  5.64  P4  H  T  0  Airbus A400M
+C17   53.0  51.8  6.85  W4  H  T  1  Boeing C-17
+K35R  41.5  39.9  3.76  W4  L  C  0  Boeing KC-135
+E3TF  46.6  44.4  3.76  W4  L  C  0  Boeing E-3
+P8    39.5  37.6  3.76  W2  L  C  3  Boeing P-8
+C5M   75.3  67.9  7.00  W4  H  T  0  Lockheed C-5

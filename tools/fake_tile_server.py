@@ -132,15 +132,25 @@ def vector_tile(z, x, y):
 
 
 T0 = time.time()
+PORT = 8765
+# (hex, callsign, reg, type, east m, north m, alt ft or 'ground', kt, track, ft/min) relative to where the game asks
+def _at(fwd, right, hdg=118.0):
+    """east, north metres from the anchor: fwd along the runway heading, right of it"""
+    f = (math.sin(math.radians(hdg)), math.cos(math.radians(hdg)))
+    r = (math.sin(math.radians(hdg + 90)), math.cos(math.radians(hdg + 90)))
+    return fwd * f[0] + right * r[0], fwd * f[1] + right * r[1]
 # (hex, callsign, reg, type, east m, north m, alt ft or 'ground', kt, track, ft/min) relative to where the game asks
 FAKE_TRAFFIC = [
-    ('a1b2c3', 'UAL1234 ', 'N12345', 'B738', 260, -100, 260, 5, 100, 0),
-    ('a1b2c4', 'BAW285  ', 'G-XLEA', 'A388', 2000, 3200, 5200, 210, 280, -900),
-    ('a1b2c5', 'ASA331  ', 'N623VA', 'A320', 95, 30, 'ground', 0, 280, 0),
-    ('a1b2c6', 'SKW5521 ', 'N601SK', 'E75L', -900, 2500, 3400, 180, 60, 1500),
-    ('a1b2c7', 'N172SP  ', 'N172SP', 'C172', 800, 1500, 1400, 95, 200, 0),
+    ('a1b2c3', 'UAL1234 ', 'N12345', 'B738', *_at(140, 95), 'ground', 0, 28, 0),
+    ('a1b2c4', 'BAW285  ', 'G-XLEA', 'A388', *_at(260, 150), 'ground', 0, 28, 0),
+    ('a1b2c5', 'ASA331  ', 'N623VA', 'A320', *_at(380, 95), 'ground', 0, 28, 0),
+    ('a1b2cd', 'UAE225  ', 'A6-EGO', 'B77W', *_at(500, 150), 'ground', 0, 28, 0),
+    ('a1b2ce', 'DAL412  ', 'N841MH', 'A21N', *_at(620, 95), 'ground', 0, 28, 0),
+    ('a1b2c9', 'QXE2014 ', 'N401QX', 'DH8D', *_at(720, 80), 'ground', 0, 28, 0),
+    ('a1b2c6', 'SKW5521 ', 'N601SK', 'CRJ9', *_at(800, 80), 'ground', 0, 28, 0),
+    ('a1b2cf', 'KLM605  ', 'PH-BHA', 'B789', *_at(940, 150), 'ground', 0, 28, 0),
+    ('a1b2c7', 'N172SP  ', 'N172SP', 'C172', *_at(90, -70), 'ground', 0, 298, 0),
     ('a1b2c8', 'VIPER11 ', '', 'F16', -4000, -2500, 9000, 420, 45, 0),
-    ('a1b2c9', 'QXE2014 ', 'N401QX', 'DH8D', 3000, -2000, 4100, 230, 300, 600),
     ('a1b2ca', 'LIFE1   ', 'N911LF', 'EC35', 500, 3500, 900, 110, 150, 0),
     ('a1b2cb', 'DAL88   ', 'N801DN', 'B77W', -6000, 6000, 11000, 300, 135, 1800),
     ('a1b2cc', '', 'N5512', '', 9000, -4000, 3500, 120, 0, 0),
@@ -164,11 +174,83 @@ def fake_traffic(lat, lon):
         ac.append(a)
     return {'ac': ac, 'msg': 'No error', 'now': int(time.time() * 1000), 'total': len(ac)}
 
+
+# what adsbdb would say about each fake aircraft
+FAKE_ROUTES = {
+    'a1b2c3': ('United Airlines', ('KSFO', 'SFO', 'San Francisco International Airport', 'San Francisco', 37.619, -122.375), ('KJFK', 'JFK', 'John F Kennedy International Airport', 'New York', 40.640, -73.779), 'Boeing', '737-824', 'B738', 'N12345', 'United Airlines'),
+    'a1b2c4': ('British Airways', ('EGLL', 'LHR', 'London Heathrow Airport', 'London', 51.470, -0.454), ('KSFO', 'SFO', 'San Francisco International Airport', 'San Francisco', 37.619, -122.375), 'Airbus', 'A380-841', 'A388', 'G-XLEA', 'British Airways'),
+    'a1b2c5': ('Alaska Airlines', ('KSEA', 'SEA', 'Seattle Tacoma International Airport', 'Seattle', 47.449, -122.309), ('KSFO', 'SFO', 'San Francisco International Airport', 'San Francisco', 37.619, -122.375), 'Airbus', 'A320-214', 'A320', 'N623VA', 'Alaska Airlines'),
+}
+def fake_adsbdb(hexid):
+    r = FAKE_ROUTES.get(hexid)
+    if not r: return None
+    airline, a, b, man, typ, icao, reg, owner = r
+    def ap(x): return {'icao_code': x[0], 'iata_code': x[1], 'name': x[2], 'municipality': x[3], 'country_name': 'United States', 'latitude': x[4], 'longitude': x[5], 'elevation': 13}
+    return {'response': {'aircraft': {'type': typ, 'icao_type': icao, 'manufacturer': man, 'mode_s': hexid.upper(), 'registration': reg,
+            'registered_owner': owner, 'registered_owner_country_name': 'United States', 'url_photo': 'http://127.0.0.1:%d/photo/%s.jpg' % (PORT, hexid), 'url_photo_thumbnail': None},
+            'flightroute': {'callsign': 'X', 'airline': {'name': airline, 'icao': 'XXX', 'country': 'United States'}, 'origin': ap(a), 'destination': ap(b)}}}
+def fake_photo(hexid):
+    # a simple invented "photo": sky gradient, ground, and a white airliner silhouette
+    from PIL import Image, ImageDraw
+    im = Image.new('RGB', (640, 400)); d = ImageDraw.Draw(im)
+    for y in range(400): d.line([(0, y), (640, y)], fill=(90 + y // 6, 140 + y // 8, 200 + y // 10) if y < 300 else (70, 75, 70))
+    d.polygon([(120, 210), (520, 195), (560, 205), (520, 222), (120, 228)], fill=(240, 240, 245))
+    d.polygon([(300, 210), (230, 290), (265, 290), (370, 212)], fill=(225, 225, 230))
+    d.polygon([(130, 212), (100, 150), (125, 150), (175, 210)], fill=(30, 60, 140))
+    buf = io.BytesIO(); im.save(buf, 'JPEG', quality=85); return buf.getvalue()
+
+
+def fake_world(n=6000):
+    """an OpenSky-style /api/states/all: aircraft all over the planet, moving with time"""
+    import random
+    rnd = random.Random(42)
+    t = time.time() - T0
+    codes = ['UAL', 'DAL', 'AAL', 'BAW', 'DLH', 'AFR', 'KLM', 'UAE', 'QTR', 'SIA', 'CPA', 'ANA', 'JAL', 'QFA', 'RYR', 'EZY', 'SWA', 'ACA', 'THY', 'CCA']
+    countries = ['United States', 'United Kingdom', 'Germany', 'France', 'Netherlands', 'United Arab Emirates', 'Japan', 'Australia', 'Canada', 'China']
+    states = []
+    for i in range(n):
+        lat0 = rnd.uniform(-55, 70); lon0 = rnd.uniform(-180, 180)
+        trk = rnd.uniform(0, 360); v = rnd.uniform(180, 260)   # m/s
+        ground = rnd.random() < 0.08
+        if ground: v = 0
+        d = v * t
+        lat = lat0 + d * math.cos(math.radians(trk)) / 111320.0
+        lon = lon0 + d * math.sin(math.radians(trk)) / (111320.0 * max(math.cos(math.radians(lat0)), 0.2))
+        lon = (lon + 180) % 360 - 180; lat = max(min(lat, 85), -85)
+        cs = '%s%d  ' % (rnd.choice(codes), rnd.randint(1, 9999))
+        alt = None if ground else rnd.uniform(9000, 12500)
+        states.append(['%06x' % (0xb00000 + i), cs, rnd.choice(countries), int(time.time()), int(time.time()), lon, lat, alt, ground, v, trk, 0.0, None, alt, '%04d' % rnd.randint(1000, 7777), False, 0, rnd.choice([4, 4, 4, 6, 3])])
+    return {'time': int(time.time()), 'states': states}
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             parts = self.path.strip('/').split('/')
             kind = parts[0]
+            if kind == 'v2' and len(parts) > 2 and parts[1] == 'hex':
+                ac = [a for a in fake_traffic(37.6, -122.37)['ac'] if a['hex'] == parts[2].lower()]
+                body = json.dumps({'ac': ac, 'msg': 'No error', 'total': len(ac)}).encode()
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)
+                return
+            if kind == 'v0':
+                r = fake_adsbdb(parts[2].split('?')[0].lower()) if len(parts) > 2 else None
+                body = json.dumps(r if r else {'response': 'unknown aircraft'}).encode()
+                self.send_response(200 if r else 404); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)
+                return
+            if kind == 'api' and len(parts) > 1 and parts[1] == 'states':
+                body = json.dumps(fake_world()).encode()
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)
+                return
+            if kind == 'pub':   # a planespotters.net style /pub/photos/hex/{hex}
+                hx = parts[-1].lower()
+                ph = [{'id': '1', 'thumbnail_large': {'src': 'http://127.0.0.1:%d/photo/%s.jpg' % (PORT, hx)}, 'link': 'http://example.invalid/', 'photographer': 'Test Spotter'}] if hx in FAKE_ROUTES else []
+                body = json.dumps({'photos': ph}).encode()
+                self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(body)
+                return
+            if kind == 'photo':
+                body = fake_photo(parts[1].split('.')[0])
+                self.send_response(200); self.send_header('Content-Type', 'image/jpeg'); self.end_headers(); self.wfile.write(body)
+                return
             if kind == 'v2':   # an adsb.lol style /v2/lat/{lat}/lon/{lon}/dist/{nm}
                 q = dict(zip(parts[1::2], parts[2::2]))
                 body = json.dumps(fake_traffic(float(q['lat']), float(q['lon']))).encode()
@@ -217,4 +299,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+    PORT = port
     ThreadingHTTPServer(('127.0.0.1', port), Handler).serve_forever()

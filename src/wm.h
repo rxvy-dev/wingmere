@@ -12,7 +12,7 @@
 #include <string.h>
 #include <strings.h>
 
-#define WM_VERSION "0.3.0"
+#define WM_VERSION "0.4.0"
 #define PI 3.14159265358979f
 #define DEG (PI / 180.0f)
 #define KT 0.514444f     /* metres/second per knot */
@@ -92,7 +92,8 @@ typedef struct {
     bool buildings; float pave;   /* how strongly to paint OSM pavement over the imagery */
     int imagery_max_zoom, elevation_max_zoom, threads, texture_budget;
     float detail; bool offline;
-    char traffic_url[512]; bool traffic, labels;   /* live ADS-B traffic: {lat} {lon} {dist} in the URL */
+    char traffic_url[512], traffic_hex_url[512], tracker_info_url[512], photo_url[512], global_url[512], sky_id[128], sky_secret[128];
+    bool traffic_global; float global_interval; bool traffic, labels;   /* live ADS-B traffic: {lat} {lon} {dist} in the URL */
 } Settings;
 extern Settings S;
 
@@ -152,6 +153,7 @@ typedef struct {
     v3 bmin, bmax, tipL, tipR, tail;   /* bounding box, wingtips (+x is left), top of the fin */
     int nengines; v3 engine[4];        /* propeller hubs / fan faces */
     float afterburner;                 /* total thrust with reheat, N (0 = none) */
+    float stroke, gear_limit;          /* optional: landing gear travel (m) and the sink rate it survives (m/s) */
     int nnozzle; v3 nozzle[4]; float nozzleR[4];
     int npilot; v3 pilot[4];           /* crew heads you can see in the cockpit */
     int pax;                           /* passenger seats */
@@ -173,6 +175,8 @@ typedef struct {
     float touchdownVs, groundSpeedSmooth, lastTouchdownVs; int touchdowns; bool contact[3];
     v3 up, east, north;
     int wheelsDown;
+    float spoiler, mainsT;                          /* ground spoilers 0..1, seconds both mains have been down */
+    float gh[3], strut[3];                          /* per wheel: ground height it is rolling on, strut compression (m) */
 } Flight;
 void flight_reset(Flight *f, const AircraftDef *a, double lat, double lon, double alt, float heading_deg, float speed, bool onGround);
 void flight_step(Flight *f, float dt);
@@ -219,6 +223,7 @@ void hud_circle(float x, float y, float rad, float th, float r, float g, float b
 void hud_disc(float x, float y, float rad, float r, float g, float b, float a);
 void hud_clip(float x, float y, float w, float h);
 void hud_clip_off(void);
+void hud_image(unsigned tex, float x, float y, float w, float h);
 
 void audio_init(void);
 typedef struct { float rpm, throttle, airspeed, stall, onGround, groundSpeed, gearMoving, master, crash; int engine; /* 0 radial 1 turboprop 2 jet */ } AudioState;
@@ -227,14 +232,22 @@ void audio_event(int ev); /* 0 click, 1 touchdown, 2 crash, 3 ap off, 4 warning,
 
 
 /* ------------------------------------------------------------------ live air traffic (traffic.c) */
-#define MAX_TRAFFIC 400
+#define MAX_TRAFFIC 24000   /* the whole world: a global snapshot is ~10-15k aircraft */
+#define TRAIL 64
 typedef struct {
     char hex[8], callsign[12], reg[12], type[6];
+    char desc[48], ownOp[48], year[6], squawk[6], emergency[16], category[4];
+    float navAlt, navHdg, mach, ias, altGeom; bool mil;  /* autopilot selected altitude (m) and heading, -1 if unknown */
+    float trail[TRAIL][3]; int ntrail, trailHead;        /* where it has been: lat, lon, alt of each report */
+    char country[24]; int cat;                           /* registration country, emitter category (global feed) */
+    float detAge;                                        /* seconds since the detailed nearby feed last saw it */
+    bool guessed;                                        /* type not reported: airframe picked from its category */
     double lat, lon, alt;                       /* drawn position (metres above sea level) */
     double fixLat, fixLon, fixAlt; float fixT;  /* last report and the time since it */
     float gs, track, vrate, age, bank, turn, prevTrack;  /* m/s, degrees true, m/s */
     bool ground, fresh;
     const char *model; float scale;             /* which of our aircraft stands in for it */
+    int atype, liv;                             /* or: its own airframe built from the type table, in its airline's colours */
 } Traffic;
 extern Traffic g_traffic[MAX_TRAFFIC];
 extern int g_ntraffic;
@@ -242,5 +255,42 @@ void traffic_init(void);
 void traffic_enable(bool on);
 void traffic_update(double lat, double lon, float dt);
 bool traffic_status(int *count);
+int traffic_world(float *age, bool *ok);   /* aircraft known worldwide, seconds since the global snapshot */
+void traffic_track(const char *hex);    /* also poll this aircraft by itself, wherever it goes ("" to stop) */
+int traffic_find(const char *hex);
+
+/* ------------------------------------------------------------------ airframes for live traffic (airframe.c) */
+void airframe_init(const char *datadir);
+int airframe_find(const char *icao);
+int airframe_livery(const char *callsign, bool mil);
+const char *airframe_name(int t);
+float airframe_span(int t);
+float airframe_length(int t);
+float airframe_ground(int t);
+void airframe_draw(GLuint prog, int type, int liv, m4 model, float gearDown);
+
+/* ------------------------------------------------------------------ plane tracker (tracker.c) */
+typedef struct { char icao[8], iata[8], name[80], city[48], country[40]; double lat, lon; float elev; } RouteAirport;
+typedef struct {
+    char hex[8], callsign[12];
+    int state;                              /* 0 nothing, 1 looking it up, 2 found, 3 nothing known */
+    char type[48], manufacturer[48], icaoType[8], reg[16], owner[64], ownerCountry[40];
+    char airline[64], airlineCountry[40];
+    bool hasRoute; RouteAirport from, to;
+    unsigned tex; int pw, ph; char photoBy[64];   /* a real photo of this airframe, if one exists */
+} TrackInfo;
+extern TrackInfo g_track;
+extern bool g_trackPanel, g_trackTyping;
+extern char g_trackSearch[24];
+void tracker_scroll(int rows);
+bool tracker_over_list(float x, float y);
+void tracker_init(void);
+void tracker_select(const char *hex);   /* "" stops tracking */
+void tracker_frame(void);               /* main thread: uploads the photo, keeps the lookup in step with the callsign */
+int tracker_index(void);                /* the tracked aircraft in g_traffic, or -1 */
+void tracker_cycle(double lat, double lon, int dir);
+const char *tracker_phase(const Traffic *t);
+void tracker_draw(const Camera *cam, float W, float H, float s, double plat, double plon, bool watching);
+bool tracker_click(float x, float y);
 
 #endif

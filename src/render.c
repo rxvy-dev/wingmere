@@ -460,8 +460,11 @@ static void draw_traffic(const Camera *cam, float t) {
     if (!g_ntraffic) return;
     static const float LIV[6][4] = {{1, 1, 1, 0}, {0.92f, 0.93f, 0.95f, 0.7f}, {0.1f, 0.25f, 0.65f, 0.55f}, {0.7f, 0.06f, 0.05f, 0.5f}, {0.08f, 0.08f, 0.1f, 0.6f}, {0.95f, 0.55f, 0.1f, 0.5f}};
     bool night = render_light_level() < 0.6f;
+    double clat, clon, calt; ecef_to_geo(cam->pos, &clat, &clon, &calt);
+    float cosl = cosf((float)(clat * M_PI / 180));
     for (int i = 0; i < g_ntraffic; i++) {
         Traffic *tr = &g_traffic[i];
+        if (fabs(tr->lat - clat) > 0.9 || fabs(remainder(tr->lon - clon, 360.0)) * cosl > 0.9 || tr->alt < -1e8) continue;   /* only what could be in view */
         d3 p = geo_to_ecef(tr->lat, tr->lon, tr->alt);
         v3 rel = d2f(dsub(p, cam->pos));
         float d = vlen(rel);
@@ -479,7 +482,15 @@ static void draw_traffic(const Camera *cam, float t) {
         const AircraftDef *a = NULL;
         if (tr->model) for (int k = 0; k < g_naircraft; k++) if (!strcmp(g_aircraft[k].id, tr->model)) { a = &g_aircraft[k]; break; }
         float sc = tr->scale > 0 ? tr->scale : 1;
-        if (a && d < 30000) {
+        bool own = tr->atype >= 0 && strcmp(tr->type, "F14") && strcmp(tr->type, "F117");
+        if (own && d < 30000) {
+            /* its own airframe, the real size and shape of its type, in its airline's colours */
+            float lift = tr->ground ? airframe_ground(tr->atype) : 0;
+            float agl = (float)(tr->alt - terrain_height(tr->lat, tr->lon, NULL, NULL));
+            float gear = tr->ground || (agl < 900 && tr->vrate < 2) ? 1.0f : 0.0f;
+            glUniform4f(U(pPlane, "uPaint"), 0, 0, 0, 0);
+            airframe_draw(pPlane, tr->atype, tr->liv, m4_trs(vadd(rel, vmul(u, lift)), q_look(f, up), 1), gear);
+        } else if (a && d < 30000) {
             float lift = tr->ground ? (-fminf(fminf(a->gear[0].y, a->gear[1].y), a->gear[2].y) - 0.05f) * sc : 0;
             v3 pr = vadd(rel, vmul(u, lift));
             float agl = (float)(tr->alt - terrain_height(tr->lat, tr->lon, NULL, NULL));
@@ -489,8 +500,8 @@ static void draw_traffic(const Camera *cam, float t) {
             aircraft_draw(pPlane, a, m4_trs(pr, q_look(f, up), sc), t * 40 + (float)i, gear, false);
         }
         /* nav lights, beacon and strobes, so you can spot them from far away, day or night */
-        if (!a || night || d > 2500) {
-            float span = (a ? a->span : 30) * sc * 0.5f;
+        if ((!a && !own) || night || d > 2500) {
+            float span = (own ? airframe_span(tr->atype) : (a ? a->span : 30) * sc) * 0.5f;
             d3 L = dadd(p, f2d(vmul(rt, -span))), R = dadd(p, f2d(vmul(rt, span)));
             float base = night ? 1.0f : 0.35f;
             fx_light(L, 0.5f, 1.0f, 0.12f, 0.08f, base * 2.2f);
