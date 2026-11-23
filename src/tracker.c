@@ -273,6 +273,7 @@ void tracker_frame(void) {
         g_traffic[i].atype = airframe_find(g_traffic[i].type); g_traffic[i].guessed = false;
         if (g_track.reg[0] && !g_traffic[i].reg[0]) snprintf(g_traffic[i].reg, sizeof g_traffic[i].reg, "%s", g_track.reg);
     }
+    if (i >= 0 && g_track.hasRoute) { g_traffic[i].destLat = g_track.to.lat; g_traffic[i].destLon = g_track.to.lon; g_traffic[i].hasDest = true; }
     /* the callsign often arrives a report or two after the aircraft does: look the route up again then */
     if (i >= 0 && !g_track.callsign[0] && g_track.state != 1) {
         Traffic *t = &g_traffic[i];
@@ -583,5 +584,6 @@ void tracker_draw(const Camera *cam, float W, float H, float s, double plat, dou
         cy += 42 * s;
     }
     hud_clip_off();
-    hud_text(x + pad, y + h - 12 * s, 8 * s, watching ? "J BACK TO YOUR AIRCRAFT   N NEXT   DEL STOP TRACKING" : "J WATCH IT   SHIFT+J FLY WITH IT   N NEXT   DEL STOP", TGREY, 0.95f, 0);
+    if (t && t->ahead > 1) { snprintf(b, sizeof b, "PREDICTED %d MIN AHEAD OF LIVE DATA", (int)(t->ahead / 60)); hud_text(x + w - pad, y + h - 26 * s, 8 * s, b, TAMBER, 1, 2); }
+    hud_text(x + pad, y + h - 12 * s, 8 * s, watching ? "J BACK TO YOUR AIRCRAFT   N NEXT   DEL STOP TRACKING" : (g_track.hasRoute ? "I ESCORT IT   O FLY ITS ROUTE   J WATCH   SHIFT+J ITS WING" : "I ESCORT IT   J WATCH   SHIFT+J FLY ON ITS WING   DEL STOP"), TGREY, 0.95f, 0);
 }

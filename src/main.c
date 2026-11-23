@@ -29,15 +29,17 @@ static int doy = 172;
 static double utcHours;
 static float simTime, realTime;
 static int camMode = CAM_CHASE;
-static float camYaw, camPitch = 0.16f, camZoom = 1, lookYaw, lookPitch;
+static float camYaw, camPitch = 0.2f, camZoom = 1, lookYaw, lookPitch;
+static float camDistS, camPitchS, camLift;   /* smoothed chase distance and height, and the eased lift over terrain */
 static v3 chaseDir; static bool chaseInit;
 static d3 flybyPos; static bool flybyOk;
 static d3 towerPos; static float towerTimer;
 static Camera cam;
 static bool showHud = true, showMap, showFps, showHelp, paused, parkBrake;
 static bool searchFly;
+static int cfgVersion;   /* 2: faster ground loading defaults */
 static float flareElev, groundT, gndHdg, sinceTouch = 99, tdPitch; static bool bounceHold, landingTouch, gndWas; static float gndCont;   /* touchdown hand-over from fly-by-wire to the stick */
-static char argTrack[8]; static bool argWatch;
+static char argTrack[8]; static bool argWatch; static char argEscort[8]; static float argEscortWarp; static char argRoute[8]; static int argRouteStage;
 static bool watching;              /* the camera is following the tracked aircraft; yours waits */
 static float watchSize = 1;
 static int argPos; static double posLat, posLon, posAlt; static float posHdg;            /* the airport search was opened from the pause menu: go straight there */
@@ -113,6 +115,7 @@ static const char *START_NAME[3] = {"ON THE RUNWAY", "ON FINAL APPROACH", "IN TH
 #define RED 0.86f, 0.09f, 0.08f
 #define WHITE 0.94f, 0.93f, 0.91f
 #define AMBER 1.0f, 0.68f, 0.12f
+#define MAGENTA 0.95f, 0.25f, 0.85f
 #define GREEN 0.35f, 1.0f, 0.45f
 #define GREY 0.6f, 0.6f, 0.62f
 
@@ -164,7 +167,7 @@ static void settings_defaults(void) {
     snprintf(S.elevation_url, sizeof S.elevation_url, "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png");
     snprintf(S.user_agent, sizeof S.user_agent, "Wingmere/" WM_VERSION " (open-source flight simulator; https://github.com/rxvy-dev/wingmere)");
     home_path(S.cache_dir, sizeof S.cache_dir, "XDG_CACHE_HOME", ".cache", "");
-    S.imagery_max_zoom = 14; S.elevation_max_zoom = 13; S.threads = 8; S.texture_budget = 1536; S.detail = 1.0f; S.offline = false;
+    S.imagery_max_zoom = 14; S.elevation_max_zoom = 13; S.threads = 12; S.texture_budget = 3072; S.detail = 1.15f; S.offline = false;
     snprintf(S.vector_tilejson, sizeof S.vector_tilejson, "https://tiles.openfreemap.org/planet");
     S.buildings = true;
     snprintf(S.traffic_url, sizeof S.traffic_url, "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist}");
@@ -201,6 +204,7 @@ static void settings_load(void) {
         else if (!strcmp(k, "imagery_max_zoom")) S.imagery_max_zoom = atoi(v);
         else if (!strcmp(k, "elevation_max_zoom")) S.elevation_max_zoom = atoi(v);
         else if (!strcmp(k, "threads")) S.threads = atoi(v);
+        else if (!strcmp(k, "cfg_version")) cfgVersion = atoi(v);
         else if (!strcmp(k, "texture_budget")) S.texture_budget = atoi(v);
         else if (!strcmp(k, "detail")) S.detail = (float)atof(v);
         else if (!strcmp(k, "offline")) S.offline = cfgOffline = atoi(v);
@@ -240,6 +244,7 @@ static void settings_load(void) {
         else if (!strcmp(k, "imagery")) provSel = atoi(v) % 3;
         else if (!strncmp(k, "look_", 5)) snprintf(lookCfg[nLookCfg < 16 ? nLookCfg++ : 15], 80, "%s %s", k + 5, v);
     }
+    if (cfgVersion < 2) { if (S.threads == 8) S.threads = 12; if (S.texture_budget == 1536) S.texture_budget = 3072; }   /* older configs: new loading defaults */
     fclose(f);
 }
 static const char *rw_ident(int ri, int end) { return end ? g_runways[ri].he : g_runways[ri].le; }
@@ -254,6 +259,7 @@ static void settings_save(void) {
     fprintf(f, "elevation_url = %s\nvector_tilejson = %s\nbuildings = %d\n", S.elevation_url, S.vector_tilejson, S.buildings);
     fprintf(f, "traffic = %d\ntraffic_url = %s\ntraffic_labels = %d\n", S.traffic, S.traffic_url, S.labels);
     fprintf(f, "traffic_hex_url = %s\ntracker_info_url = %s\nphoto_url = %s\n", S.traffic_hex_url, S.tracker_info_url, S.photo_url);
+    fprintf(f, "cfg_version = 2\n");
     fprintf(f, "traffic_global = %d\nglobal_url = %s\nglobal_interval = %.0f\n", S.traffic_global, S.global_url, S.global_interval);
     if (S.sky_id[0]) fprintf(f, "opensky_client_id = %s\nopensky_client_secret = %s\n", S.sky_id, S.sky_secret);
     fprintf(f, "imagery_max_zoom = %d\nelevation_max_zoom = %d\nthreads = %d\ntexture_budget = %d\ndetail = %.2f\noffline = %d\n",
@@ -416,10 +422,17 @@ static void autopilot(float dt) {
     float bankT = clampf(he * 1.2f, -25, 25);
     FL.ail = clampf((bankT - FL.bank) * 0.045f - br * 0.02f, -1, 1);
     /* altitude -> pitch -> elevator */
+    float spdErr = apSpd - FL.ias;
     float pitchT = clampf((apAlt - (float)FL.alt) * 0.035f - FL.vs * 0.25f, -8, 12) + fabsf(FL.bank) * 0.05f;
+    /* climbing: climb power, and never trade away the speed for height (lower the nose instead) */
+    bool climbing = apAlt > FL.alt + 120;
+    if (climbing && spdErr > 0) pitchT -= fminf(spdErr * 0.35f, 10);
+    if (apAlt < FL.alt - 120 && spdErr < -5) pitchT += fminf(-spdErr * 0.2f, 4);    /* descending fast: ease the dive */
     FL.elev = clampf((pitchT - FL.pitch) * 0.07f - pr * 0.03f, -1, 1);
-    /* speed -> throttle */
-    FL.throttle = clampf(FL.throttle + ((apSpd - FL.ias) * 0.04f - 0.0f) * dt, 0, 1);
+    /* speed -> throttle (no afterburner on the autopilot) */
+    float top = FL.def->afterburner > 0 ? 0.9f : 1.0f;
+    FL.throttle = clampf(FL.throttle + spdErr * 0.06f * dt, 0, top);
+    if (climbing) FL.throttle = fmaxf(FL.throttle, 0.92f * top);
     FL.rud = 0;
 }
 static void ap_toggle(void) {
@@ -428,6 +441,217 @@ static void ap_toggle(void) {
         ap = true; apAlt = (float)FL.alt; apHdg = roundf(FL.heading); apSpd = FL.ias;
         say("AUTOPILOT ON - HOLDS HEADING, ALTITUDE, SPEED");
     } else { ap = false; audio_event(3); say("AUTOPILOT OFF"); }
+}
+
+/* ------------------------------------------------------------------ routes: fly a real flight's route */
+static struct { bool on; double lat, lon; float elev; char to[8], from[8], name[48]; } route;
+static int apNav;                 /* autopilot NAV: 0 off, 1 follow the route, 2 hold formation on the escorted aircraft */
+static float cruise_alt(void) {
+    const AircraftDef *d = FL.def;
+    if (d->afterburner > 0) return 9500;
+    if (d->jet) return d->mass > 40000 ? 11000 : 10000;
+    if (!strcmp(d->sound, "turboprop")) return 6000;
+    return d->v_cruise > 100 ? 4500 : 1500;
+}
+static void fly_route(void) {
+    int i = tracker_index();
+    if (!g_track.hasRoute) { say("ITS ROUTE IS NOT KNOWN - PICK A SCHEDULED FLIGHT"); return; }
+    int a = airport_find(g_track.from.icao);
+    if (a < 0) { double d; a = airport_nearest(g_track.from.lat, g_track.from.lon, &d); if (a < 0 || d > 20000) { say("ITS DEPARTURE AIRPORT IS NOT IN THE DATA"); return; } }
+    route.on = true; route.lat = g_track.to.lat; route.lon = g_track.to.lon; route.elev = g_track.to.elev;
+    int b = airport_find(g_track.to.icao); if (b >= 0) route.elev = g_airports[b].elev;
+    snprintf(route.to, sizeof route.to, "%s", g_track.to.iata[0] ? g_track.to.iata : g_track.to.icao);
+    snprintf(route.from, sizeof route.from, "%s", g_track.from.iata[0] ? g_track.from.iata : g_track.from.icao);
+    snprintf(route.name, sizeof route.name, "%s  %s - %s", i >= 0 ? g_traffic[i].callsign : g_track.callsign, route.from, route.to);
+    chalActive = -1; restore_free(); watching = false; startMode = 0; simRate = 1;
+    select_airport(a, NULL);
+    start_flight();
+    say("FLY ITS ROUTE: FOLLOW THE MAGENTA LINE. Y = AUTOPILOT NAV ONCE AIRBORNE");
+}
+
+/* ------------------------------------------------------------------ escort missions: scramble, intercept, escort it out of the country */
+enum { ES_OFF, ES_SCRAMBLE, ES_INTERCEPT, ES_JOIN, ES_ESCORT, ES_DONE, ES_FAIL };
+static struct {
+    int phase, country, stars; char hex[8], call[12], type[8], why[96];
+    float t, tEscort, tForm, distSum, lostT, farT, warnT, checkT, etaT, exitEta, resultT;
+    double exitLat, exitLon; bool exitKnown, warping; float offA, offC, offU;
+} esc;
+static bool escorting(void) { return esc.phase >= ES_SCRAMBLE && esc.phase <= ES_ESCORT; }
+static void escort_end(int phase, const char *why) {
+    int i = traffic_find(esc.hex); if (i >= 0) g_traffic[i].ahead = 0;
+    esc.phase = phase; snprintf(esc.why, sizeof esc.why, "%s", why);
+    float pct = esc.tEscort > 1 ? esc.tForm / esc.tEscort : 0;
+    esc.stars = phase == ES_DONE ? (pct > 0.9f ? 3 : pct > 0.7f ? 2 : 1) : 0;
+    if (simRate > 1) simRate = 1;
+    if (apNav == 2) apNav = 0;
+    esc.resultT = 0;
+    audio_event(phase == ES_DONE ? 6 : 3);
+}
+static void escort_start(void) {
+    int i = tracker_index();
+    if (i < 0) { say("PICK AN AIRCRAFT FIRST: K FOR THE TRACKER, OR N"); return; }
+    Traffic *t = &g_traffic[i];
+    if (t->ground) { say("IT IS ON THE GROUND. PICK ONE THAT IS FLYING"); return; }
+    int c = borders_airspace(t->lat, t->lon);
+    if (c < 0) { say("IT IS OVER INTERNATIONAL WATERS. PICK ONE INSIDE A COUNTRY"); return; }
+    /* the scramble base: a long paved runway close to it, in the same country */
+    int best = -1; double bestScore = 1e18;
+    for (int a = 0; a < g_nairports; a++) {
+        Airport *ap_ = &g_airports[a];
+        if (!ap_->nrw) continue;
+        float longest = 0;
+        for (int r = 0; r < ap_->nrw; r++) { Runway *rw = &g_runways[ap_->rw0 + r]; if (rw->surface == 0) longest = fmaxf(longest, rw->length); }
+        if (longest < 2300) continue;
+        double d = geo_dist(ap_->lat, ap_->lon, t->lat, t->lon);
+        if (d > 900000 || d > bestScore) continue;
+        double score = d + (borders_land(ap_->lat, ap_->lon) == c ? 0 : 400000);
+        if (score < bestScore) { bestScore = score; best = a; }
+    }
+    if (best < 0) { say("NO AIRPORT CLOSE ENOUGH TO SCRAMBLE FROM"); return; }
+    memset(&esc, 0, sizeof esc);
+    esc.phase = ES_SCRAMBLE; esc.country = c;
+    snprintf(esc.hex, sizeof esc.hex, "%s", t->hex); snprintf(esc.call, sizeof esc.call, "%s", t->callsign); snprintf(esc.type, sizeof esc.type, "%s", t->type);
+    /* a fast jet for the job */
+    if (!(FL.def->afterburner > 0)) { int f = aircraft_by_id("f35"); if (f < 0) f = aircraft_by_id("f14"); if (f >= 0) acSel = f; }
+    chalActive = -1; restore_free(); watching = false; route.on = false; startMode = 0; simRate = 1; apNav = 0;
+    select_airport(best, NULL);
+    start_flight();
+    char b[128]; snprintf(b, sizeof b, "SCRAMBLE! INTERCEPT %s AND ESCORT IT OUT OF %s", esc.call, borders_name(c)); say(b);
+}
+/* where to fly to meet it: lead pursuit on its track at our speed */
+static void intercept_steer(const Traffic *t, float *hdg, float *dist) {
+    double d = geo_dist(FL.lat, FL.lon, t->lat, t->lon), b = geo_bearing(FL.lat, FL.lon, t->lat, t->lon);
+    double px = d * sin(b * DEG), py = d * cos(b * DEG), vx = t->gs * sin(t->prevTrack * DEG), vy = t->gs * cos(t->prevTrack * DEG);
+    double vp = fmax(FL.gs, 160), A = vx * vx + vy * vy - vp * vp, B = 2 * (px * vx + py * vy), C = px * px + py * py, tt = -1;
+    if (fabs(A) > 1e-6) { double D = B * B - 4 * A * C; if (D >= 0) { double t1 = (-B - sqrt(D)) / (2 * A), t2 = (-B + sqrt(D)) / (2 * A); tt = t1 > 0 ? t1 : t2; } }
+    if (tt > 0 && tt < 7200) *hdg = (float)fmod(atan2(px + vx * tt, py + vy * tt) / DEG + 360, 360);
+    else *hdg = (float)b;
+    *dist = (float)d;
+}
+/* the formation slot: a little behind it and off its right wing */
+static void formation_slot(const Traffic *t, double *la, double *lo, double *al) {
+    double a1, o1;
+    float span = t->atype >= 0 ? airframe_span(t->atype) : 35;
+    geo_offset(t->lat, t->lon, t->prevTrack + 180, 90 + span, &a1, &o1);
+    geo_offset(a1, o1, t->prevTrack + 90, 40 + span * 1.2, la, lo);
+    *al = t->alt + 15;
+}
+static void escort_update(float dt) {
+    if (!escorting()) { if (esc.phase >= ES_DONE) esc.resultT += dt; return; }
+    if (FL.crashed) { escort_end(ES_FAIL, "YOU CRASHED"); return; }
+    int i = traffic_find(esc.hex);
+    if (i < 0) { esc.lostT += dt; if (esc.lostT > 150) { char b[96]; snprintf(b, sizeof b, "%s DROPPED OFF THE RADAR", esc.call); escort_end(ES_FAIL, b); } return; }
+    esc.lostT = 0;
+    Traffic *t = &g_traffic[i];
+    float sdt = dt * simRate;     /* escort statistics count simulated time, warp included */
+    esc.t += sdt;
+    double dh = geo_dist(FL.lat, FL.lon, t->lat, t->lon); float dalt = (float)(FL.alt - t->alt);
+    /* has it left the country? */
+    esc.checkT -= dt;
+    if (esc.checkT <= 0) {
+        esc.checkT = 1.5f;
+        int c = borders_airspace(t->lat, t->lon);
+        if (c != esc.country) {
+            char b[96];
+            if (esc.phase == ES_ESCORT) { snprintf(b, sizeof b, "%s HAS LEFT %s AIRSPACE", esc.call, borders_name(esc.country)); escort_end(ES_DONE, b); }
+            else { snprintf(b, sizeof b, "%s LEFT %s BEFORE YOU JOINED UP", esc.call, borders_name(esc.country)); escort_end(ES_FAIL, b); }
+            return;
+        }
+    }
+    /* where and when it will leave: march along where it is heading */
+    esc.etaT -= dt;
+    if (esc.etaT <= 0) {
+        esc.etaT = 8; esc.exitKnown = false;
+        double la = t->lat, lo = t->lon;
+        bool toDest = t->hasDest;
+        for (int k = 1; k <= 300; k++) {
+            float brg = toDest ? (float)geo_bearing(la, lo, t->destLat, t->destLon) : t->prevTrack;
+            if (toDest && geo_dist(la, lo, t->destLat, t->destLon) < 15000) break;
+            double nla, nlo; geo_offset(la, lo, brg, 15000, &nla, &nlo); la = nla; lo = nlo;
+            if (borders_airspace(la, lo) != esc.country) { esc.exitKnown = true; esc.exitLat = la; esc.exitLon = lo; esc.exitEta = (float)(k * 15000.0 / fmax(t->gs, 50)); break; }
+        }
+    }
+    switch (esc.phase) {
+    case ES_SCRAMBLE:
+        if (!FL.onGround && FL.agl > 60) { esc.phase = ES_INTERCEPT; say("AIRBORNE. FOLLOW THE INTERCEPT CUE, AFTERBURNER IF YOU NEED IT"); }
+        break;
+    case ES_INTERCEPT:
+        if (dh < 3500 && fabsf(dalt) < 900) { esc.phase = ES_JOIN; say("CLOSING. MATCH ITS SPEED AND HEIGHT, SLIDE ONTO ITS RIGHT WING"); }
+        break;
+    case ES_JOIN:
+        if (dh < 1100 && fabsf(dalt) < 160 && fabsf(FL.gs - t->gs) < 30) {
+            esc.phase = ES_ESCORT;
+            char b[128]; snprintf(b, sizeof b, "JOINED UP. ESCORT %s OUT OF %s. Y = AUTOPILOT FORMATION", esc.call, borders_name(esc.country)); say(b);
+        } else if (dh > 8000) esc.phase = ES_INTERCEPT;
+        break;
+    case ES_ESCORT: {
+        esc.tEscort += sdt;
+        bool form = dh > 60 && dh < 1000 && fabsf(dalt) < 200;
+        if (form) esc.tForm += sdt;
+        esc.distSum += (float)dh * sdt;
+        esc.warnT -= dt;
+        if (!form && esc.warnT <= 0 && !esc.warping) {
+            esc.warnT = 4;
+            say(dh <= 60 ? "TOO CLOSE - OPEN UP" : dh >= 1000 ? (FL.gs < t->gs ? "FALLING BEHIND - MORE POWER" : "TOO FAR - CLOSE UP") : (dalt > 0 ? "TOO HIGH - DESCEND TO ITS ALTITUDE" : "TOO LOW - CLIMB TO ITS ALTITUDE"));
+        }
+        if (dh > 15000) { esc.farT += dt; if (esc.farT > 60) { char b[96]; snprintf(b, sizeof b, "LOST CONTACT WITH %s", esc.call); escort_end(ES_FAIL, b); return; } }
+        else esc.farT = 0;
+        break;
+    }
+    }
+}
+/* escort time warp: it is predicted ahead along its route and you are carried beside it */
+static void escort_warp(float dt) {
+    int i = traffic_find(esc.hex);
+    if (i < 0) return;
+    Traffic *t = &g_traffic[i];
+    if (!esc.warping) {
+        /* remember where we sit relative to it */
+        double d = geo_dist(t->lat, t->lon, FL.lat, FL.lon), b = geo_bearing(t->lat, t->lon, FL.lat, FL.lon);
+        esc.offA = (float)(d * cos((b - t->prevTrack) * DEG)); esc.offC = (float)(d * sin((b - t->prevTrack) * DEG)); esc.offU = (float)(FL.alt - t->alt);
+        esc.warping = true;
+    }
+    t->ahead += (simRate - 1) * dt;
+    double a1, o1, la, lo;
+    geo_offset(t->lat, t->lon, t->prevTrack, esc.offA, &a1, &o1);
+    geo_offset(a1, o1, t->prevTrack + 90, esc.offC, &la, &lo);
+    float tas = fmaxf(t->gs, flight_stall_speed(FL.def, 0) * 1.3f);
+    flight_reset(&FL, FL.def, la, lo, (float)(t->alt + esc.offU), t->prevTrack, tas, false);
+    if (FL.def->retract) FL.gearDown = FL.gearCmd = 0;
+    flight_trim(&FL, 0);
+    flight_step(&FL, 1e-4f);      /* fresh readouts (height above ground, speeds) for the HUD and checks */
+}
+/* autopilot NAV: fly the route, or hold the formation slot */
+static void nav_update(float dt) {
+    (void)dt;
+    if (!ap || !apNav) return;
+    float tasRatio = FL.ias / fmaxf(vlen(vsub(FL.vel, FL.wind)), 1);
+    if (apNav == 1) {
+        if (!route.on) { apNav = 0; return; }
+        double left = geo_dist(FL.lat, FL.lon, route.lat, route.lon);
+        apHdg = (float)geo_bearing(FL.lat, FL.lon, route.lat, route.lon);
+        float profile = route.elev + 150 + (float)(left / 19.0);          /* a 3-degree path down to the field: three miles per thousand feet */
+        apAlt = fminf(cruise_alt(), profile);
+        apAlt = fmaxf(apAlt, (float)terrain_height(FL.lat, FL.lon, NULL, NULL) + 450);
+        /* speed: jets cruise near Mach 0.78 up high and 250 kt down low, propellers at their cruise speed */
+        float sound = 340.3f * sqrtf(fmaxf(288.15f - 0.0065f * (float)fmin(FL.alt, 11000), 216.65f) / 288.15f);
+        float tasT = FL.def->jet ? (FL.def->afterburner > 0 ? 0.85f : 0.78f) * sound : FL.def->v_cruise * 1.1f;
+        float iasT = tasT * tasRatio;
+        if (FL.alt < 3050 && FL.def->jet) iasT = fminf(iasT, 250 * KT);
+        float vs0 = flight_stall_speed(FL.def, FL.flaps);
+        apSpd = left < 60000 ? vs0 * 1.45f : clampf(iasT, vs0 * 1.35f, FL.def->vne * 0.9f);
+        if (left < 22000) { ap = false; apNav = 0; audio_event(3); char b[96]; snprintf(b, sizeof b, "%s AHEAD - AUTOPILOT OFF, YOUR AIRCRAFT. LINE UP AND LAND", route.to); say(b); }
+    } else if (apNav == 2) {
+        int i = traffic_find(esc.hex);
+        if (i < 0 || !escorting()) { apNav = 0; return; }
+        Traffic *t = &g_traffic[i];
+        double la, lo, al; formation_slot(t, &la, &lo, &al);
+        double d = geo_dist(FL.lat, FL.lon, la, lo), b = geo_bearing(FL.lat, FL.lon, la, lo);
+        float along = (float)(d * cos((b - t->prevTrack) * DEG)), cross = (float)(d * sin((b - t->prevTrack) * DEG));
+        apHdg = fmodf(t->prevTrack + clampf(cross * 0.04f, -25, 25) + 360, 360);
+        apAlt = (float)al;
+        apSpd = (t->gs + clampf(along * 0.05f, -40, 40)) * tasRatio;
+    }
 }
 /* aircraft position in a runway's frame, measured from the threshold it is heading towards */
 static bool runway_frame(int ri, double lat, double lon, float hdg, float *along, float *across, int *end) {
@@ -558,16 +782,32 @@ static void update_camera(float dt) {
     cam.up = up;
     switch (camMode) {
     case CAM_CHASE: {
-        v3 dir = vnorm(vsub(F, vmul(up, vdot(F, up) * 0.7f)));
-        if (!chaseInit) { chaseDir = dir; chaseInit = true; }
-        chaseDir = vnorm(vlerp(chaseDir, dir, 1 - expf(-dt * 4)));
+        /* Chase camera: follows the flight path rather than the nose, lags a touch behind turns so small
+         * corrections don't shake it, sits a little above and looks ahead of the aeroplane so you see where
+         * you're going.  Lower down with the gear out it rises a little to show the runway. */
+        v3 vel = vsub(FL.vel, vmul(up, vdot(FL.vel, up)));
+        v3 noseH = vsub(F, vmul(up, vdot(F, up)));
+        v3 dir = vlen(noseH) > 0.05f ? vnorm(noseH) : chaseDir;
+        if (vlen(vel) > 25 && !FL.onGround) dir = vnorm(vadd(vmul(dir, 0.45f), vmul(vnorm(vel), 0.55f)));
+        if (!chaseInit) { chaseDir = dir; chaseInit = true; camDistS = size; camPitchS = camPitch; }
+        float turnK = 1 - expf(-dt * 2.6f);
+        chaseDir = vnorm(vlerp(chaseDir, dir, turnK));
+        bool landing = FL.gearDown > 0.5f && !FL.onGround && FL.agl < 450 && FL.vs < 1;
+        float spdK = clampf(FL.gs / fmaxf(FL.def->v_cruise, 50), 0, 1.6f);
+        float wantD = size * (1 + 0.12f * spdK), wantP = camPitch + (landing ? 0.07f : 0);
+        camDistS += (wantD - camDistS) * (1 - expf(-dt * 3));
+        camPitchS += (wantP - camPitchS) * (1 - expf(-dt * 2));
         v3 side = vnorm(vcross(chaseDir, up));
         v3 back = vmul(chaseDir, -1);
         back = vadd(vmul(back, cosf(camYaw)), vmul(side, sinf(camYaw)));
-        v3 off = vadd(vmul(back, size * cosf(camPitch)), vmul(up, size * sinf(camPitch)));
-        cam.pos = dadd(FL.pos, f2d(vadd(off, vmul(up, a->height * 0.25f))));
-        d3 target = dadd(FL.pos, f2d(vadd(vmul(up, a->height * 0.2f), vmul(chaseDir, size * 0.08f))));
+        float p = camPitchS;
+        v3 off = vadd(vmul(back, camDistS * cosf(p)), vmul(up, camDistS * sinf(p) + a->height * 0.35f));
+        cam.pos = dadd(FL.pos, f2d(off));
+        /* aim a little ahead of and above the aeroplane: it sits in the lower middle of the picture */
+        float ahead = fabsf(camYaw) < 0.6f ? camDistS * 0.35f : 0;
+        d3 target = dadd(FL.pos, f2d(vadd(vmul(up, a->height * 0.3f + camDistS * 0.04f), vmul(chaseDir, ahead))));
         cam.fwd = vnorm(d2f(dsub(target, cam.pos)));
+        cam.fov = (58 + 6 * clampf(spdK - 0.6f, 0, 1)) * DEG;
         break;
     }
     case CAM_COCKPIT: {
@@ -652,7 +892,14 @@ static void update_camera(float dt) {
         cam.fwd = vnorm(vmul(off, -1));
         cam.up = u; cam.fov = 50 * DEG;
     }
-    if (camMode != CAM_COCKPIT || wi >= 0) ground_clamp(&cam.pos);
+    if (camMode != CAM_COCKPIT || wi >= 0) {
+        /* keep above the ground, easing (terrain detail arriving would otherwise make the view jump) */
+        double lat, lon, h; ecef_to_geo(cam.pos, &lat, &lon, &h);
+        float need = fmaxf((float)(terrain_height(lat, lon, NULL, NULL) + 2.0 - h), 0);
+        camLift = need > camLift ? camLift + (need - camLift) * (1 - expf(-dt * 10)) : camLift + (need - camLift) * (1 - expf(-dt * 2));
+        if (need > camLift + 25) camLift = need;          /* a big step (teleport): no slow climb out of a hill */
+        if (camLift > 0.01f) cam.pos = geo_to_ecef(lat, lon, h + fmaxf(camLift, need - 1.0f));
+    }
 }
 
 /* ------------------------------------------------------------------ HUD */
@@ -1046,6 +1293,32 @@ static void draw_map(void) {
             hud_text(x + SZ(9), y + SZ(4), SZ(10), b, 0.95f, 0.8f, 0.4f, 0.9f, 0);
         }
     }
+    /* the escort: the country it must be taken out of, and where it will cross */
+    if (escorting() || esc.phase >= ES_DONE) {
+        const float *p; int np;
+        for (int k = 0; (np = borders_rings(esc.country, k, &p)) > 0; k++) {
+            float px0 = 0, py0 = 0;
+            for (int q = 0; q <= np; q++) {
+                float qx, qy; map_to_screen(p[(q % np) * 2], p[(q % np) * 2 + 1], cx, cy, &qx, &qy);
+                if (q && fabsf(qx - px0) < W * 0.5f) hud_line(px0, py0, qx, qy, SZ(2), RED, 0.85f);
+                px0 = qx; py0 = qy;
+            }
+        }
+        if (esc.exitKnown) { float ex, ey; map_to_screen(esc.exitLat, esc.exitLon, cx, cy, &ex, &ey); hud_circle(ex, ey, SZ(9), SZ(2.5f), AMBER, 1); hud_text(ex + SZ(12), ey + SZ(4), SZ(11), "EXIT", AMBER, 1, 0); }
+    }
+    /* your route */
+    if (route.on) {
+        double la = FL.lat, lo = FL.lon, total = geo_dist(FL.lat, FL.lon, route.lat, route.lon);
+        float ax, ay; map_to_screen(la, lo, cx, cy, &ax, &ay);
+        for (int k = 1; k <= 120; k++) {
+            double nla, nlo; geo_offset(la, lo, geo_bearing(la, lo, route.lat, route.lon), total / 120, &nla, &nlo); la = nla; lo = nlo;
+            float bx, by; map_to_screen(la, lo, cx, cy, &bx, &by);
+            if (fabsf(bx - ax) < W * 0.5f) hud_line(ax, ay, bx, by, SZ(3), MAGENTA, 0.9f);
+            ax = bx; ay = by;
+        }
+        float qx, qy; map_to_screen(route.lat, route.lon, cx, cy, &qx, &qy);
+        hud_circle(qx, qy, SZ(8), SZ(2.5f), MAGENTA, 1); hud_text(qx + SZ(11), qy - SZ(8), SZ(13), route.to, WHITE, 1, 0);
+    }
     /* the tracked aircraft: where it has been, and the rest of the way to where it is going */
     int ti = tracker_index();
     if (ti >= 0) {
@@ -1130,7 +1403,7 @@ static void draw_help(void) {
         "R F / PGUP PGDN   THROTTLE    1-9 0  SET THROTTLE   `  IDLE", "G                 LANDING GEAR", "V B               FLAPS DOWN / UP",
         "SPACE             BRAKES (SHIFT+SPACE PARKING BRAKE)", ", .               TRIM NOSE DOWN / UP", "Z                 AUTOPILOT (CONTROLS THEN ADJUST ITS TARGETS)",
         "C  F2-F7          CAMERAS     RIGHT MOUSE  LOOK / ORBIT   WHEEL  ZOOM", "M                 WORLD MAP (CLICK ANYWHERE TO TELEPORT)",
-        "P  TAB            PAUSE  SIM RATE / TIME WARP UP TO X64 (SHIFT+TAB DOWN)", "L                 LIVE TRAFFIC LABELS", "K  N  SHIFT+N     PLANE TRACKER: LIST, NEXT / PREVIOUS PLANE", "J  SHIFT+J  DEL   WATCH IT, FLY ON ITS WING, STOP TRACKING",
+        "P  TAB            PAUSE  SIM RATE / TIME WARP UP TO X64 (SHIFT+TAB DOWN)", "L                 LIVE TRAFFIC LABELS", "K  N  SHIFT+N     PLANE TRACKER: LIST, NEXT / PREVIOUS PLANE", "J  SHIFT+J  DEL   WATCH IT, FLY ON ITS WING, STOP TRACKING", "I  O  Y           ESCORT IT OUT OF THE COUNTRY, FLY ITS ROUTE, AUTOPILOT NAV",
         "H  F3             HIDE HUD  FPS", "T  SHIFT+T        TIME OF DAY", "F12               SCREENSHOT", "ESC               MENU",
     };
     int n = (int)(sizeof L / sizeof L[0]);
@@ -1359,6 +1632,98 @@ static void draw_pause(void) {
         hud_text(x + SZ(30), iy, SZ(17), PAUSE_ITEMS[i], WHITE, 1, 0);
     }
 }
+
+/* ------------------------------------------------------------------ escort and route panels */
+static void steer_cue(float cx, float y, float want, const char *label) {
+    float err = wrap180(want - FL.heading), w = SZ(260);
+    hud_rect(cx - w / 2, y, w, SZ(3), 0.35f, 0.35f, 0.38f, 0.9f);
+    float x = cx + clampf(err / 60.0f, -1, 1) * w / 2;
+    hud_tri(x, y - SZ(2), x - SZ(9), y - SZ(16), x + SZ(9), y - SZ(16), MAGENTA, 1);
+    hud_rect(cx - SZ(1), y - SZ(6), SZ(2), SZ(15), WHITE, 0.9f);
+    char b[64]; snprintf(b, sizeof b, "%s %03.0f  %s", label, fmodf(want + 360, 360), fabsf(err) < 3 ? "ON COURSE" : (err > 0 ? "TURN RIGHT" : "TURN LEFT"));
+    hud_text(cx, y + SZ(20), SZ(12), b, MAGENTA, 1, 1);
+}
+static void draw_escort_hud(void) {
+    if (!escorting()) return;
+    int i = traffic_find(esc.hex);
+    float w = SZ(660), x = (W - w) / 2, y = SZ(70), h = SZ(118);
+    panel(x, y, w, h, 0.72f);
+    static const char *PH[] = {"", "SCRAMBLE: TAKE OFF", "INTERCEPT", "JOIN UP", "ESCORT"};
+    char b[160];
+    snprintf(b, sizeof b, "%s  %s  %s", PH[esc.phase], esc.call, esc.type[0] ? esc.type : "");
+    hud_title(x + SZ(14), y + SZ(28), SZ(16), b, RED, 1, 0);
+    if (i < 0) { hud_text(x + SZ(14), y + SZ(56), SZ(13), "NO DATA FROM IT RIGHT NOW...", AMBER, 1, 0); return; }
+    Traffic *t = &g_traffic[i];
+    double dh = geo_dist(FL.lat, FL.lon, t->lat, t->lon);
+    float dalt = (float)(t->alt - FL.alt) / FT, closing = 0;
+    { static double prevD; static float pt; pt += 1; if (pt > 0) { closing = (float)(prevD - dh) / fmaxf(1.0f / 60, 1e-3f); } prevD = dh; (void)closing; }
+    char dist[32]; if (dh < 2000) snprintf(dist, sizeof dist, "%.0f M", dh); else snprintf(dist, sizeof dist, "%.1f NM", dh / 1852);
+    snprintf(b, sizeof b, "%s   %+.0f FT   IT %.0f KT  YOU %.0f KT", dist, dalt, t->gs / KT, FL.gs / KT);
+    if (t->alt / FT > 18000) snprintf(b, sizeof b, "%s   FL%03d (%+.0f FT)   IT %.0f KT  YOU %.0f KT", dist, (int)lround(t->alt / FT / 100), dalt, t->gs / KT, FL.gs / KT);
+    hud_text(x + SZ(14), y + SZ(50), SZ(12), b, WHITE, 1, 0);
+    if (esc.phase == ES_ESCORT) {
+        float pct = esc.tEscort > 1 ? esc.tForm / esc.tEscort * 100 : 100;
+        bool form = dh > 60 && dh < 1000 && fabsf(dalt * FT) < 200;
+        snprintf(b, sizeof b, "FORMATION %s   %.0f%% OF THE TIME", form ? "GOOD" : "OFF", pct);
+        if (form) hud_text(x + SZ(14), y + SZ(70), SZ(12), b, 0.35f, 0.9f, 0.45f, 1, 0);
+        else hud_text(x + SZ(14), y + SZ(70), SZ(12), b, AMBER, 1, 0);
+    } else {
+        float hdg, d; intercept_steer(t, &hdg, &d);
+        steer_cue(W / 2, y + SZ(76), esc.phase == ES_JOIN ? (float)geo_bearing(FL.lat, FL.lon, t->lat, t->lon) : hdg, esc.phase == ES_JOIN ? "TARGET" : "INTERCEPT");
+    }
+    if (esc.exitKnown) {
+        int m = (int)(esc.exitEta / 60);
+        snprintf(b, sizeof b, "LEAVES %.18s IN ~%dH %02dM%s", borders_name(esc.country), m / 60, m % 60, t->ahead > 1 ? " (PREDICTED)" : "");
+    } else snprintf(b, sizeof b, "IN %s AIRSPACE", borders_name(esc.country));
+    hud_text(x + SZ(14), y + h - SZ(12), SZ(10), b, GREY, 1, 0);
+    hud_text(x + w - SZ(14), y + h - SZ(12), SZ(9), esc.phase == ES_ESCORT ? "Y FORMATION AP   TAB WARP" : "FULL THROTTLE = AFTERBURNER", GREY, 0.95f, 2);
+}
+static void draw_route_hud(void) {
+    if (!route.on || escorting()) return;
+    double left = geo_dist(FL.lat, FL.lon, route.lat, route.lon);
+    float brg = (float)geo_bearing(FL.lat, FL.lon, route.lat, route.lon);
+    float w = SZ(520), x = (W - w) / 2, y = SZ(70), h = SZ(92);
+    panel(x, y, w, h, 0.65f);
+    char b[160], d1[24];
+    long nm = lround(left / 1852);
+    if (nm >= 1000) snprintf(d1, sizeof d1, "%ld,%03ld", nm / 1000, nm % 1000); else snprintf(d1, sizeof d1, "%ld", nm);
+    int mins = FL.gs > 20 ? (int)(left / FL.gs / 60) : -1;
+    if (mins >= 0) snprintf(b, sizeof b, "%s   %s NM TO GO   ETA %dH %02dM%s", route.name, d1, mins / 60, mins % 60, ap && apNav == 1 ? "   NAV" : "");
+    else snprintf(b, sizeof b, "%s   %s NM TO GO%s", route.name, d1, ap && apNav == 1 ? "   NAV" : "");
+    hud_text(x + SZ(14), y + SZ(24), SZ(12), b, WHITE, 1, 0);
+    steer_cue(W / 2, y + SZ(50), brg, route.to);
+    hud_text(x + w - SZ(14), y + h - SZ(8), SZ(9), "Y AUTOPILOT NAV   TAB TIME WARP", GREY, 0.95f, 2);
+}
+/* the route as a dashed magenta line in the sky ahead */
+static void draw_route_line(void) {
+    if (!route.on || escorting() || showMap) return;
+    double la = FL.lat, lo = FL.lon, left = geo_dist(FL.lat, FL.lon, route.lat, route.lon);
+    float px = 0, py = 0; bool have = false;
+    for (int k = 1; k <= 40 && k * 1500.0 < left; k++) {
+        double nla, nlo; geo_offset(la, lo, geo_bearing(la, lo, route.lat, route.lon), 1500, &nla, &nlo); la = nla; lo = nlo;
+        float sx, sy;
+        bool ok = world_to_screen(geo_to_ecef(la, lo, FL.alt - 30), &cam, &sx, &sy);
+        if (ok && have && (k & 1)) hud_line(px, py, sx, sy, SZ(3), MAGENTA, 0.8f * (1 - k / 44.0f));
+        px = sx; py = sy; have = ok;
+    }
+}
+static void draw_escort_result(void) {
+    if (esc.phase < ES_DONE || esc.resultT > 30) return;
+    float w = SZ(620), h = SZ(260), x = (W - w) / 2, y = H * 0.24f;
+    panel(x, y, w, h, 0.9f);
+    char b[128];
+    hud_title(W / 2, y + SZ(56), SZ(34), esc.phase == ES_DONE ? "ESCORT COMPLETE" : "ESCORT FAILED", RED, 1, 1);
+    hud_text(W / 2, y + SZ(92), SZ(14), esc.why, WHITE, 1, 1);
+    if (esc.tEscort > 0) {
+        snprintf(b, sizeof b, "IN FORMATION %.0f%% OF %d MIN   AVERAGE DISTANCE %.0f M", esc.tForm / esc.tEscort * 100, (int)(esc.tEscort / 60), esc.distSum / esc.tEscort);
+        hud_text(W / 2, y + SZ(130), SZ(13), b, WHITE, 0.95f, 1);
+    }
+    for (int k = 0; k < 3; k++) {
+        float cx = W / 2 + (k - 1) * SZ(54), cy = y + SZ(180);
+        if (k < esc.stars) hud_disc(cx, cy, SZ(16), RED, 1); else hud_circle(cx, cy, SZ(16), SZ(2), GREY, 0.8f);
+    }
+    hud_text(W / 2, y + h - SZ(18), SZ(11), "ENTER  KEEP FLYING      ESC  MENU      K  PICK ANOTHER", GREY, 1, 1);
+}
 static void draw_result(void) {
     char b[128];
     if (FL.crashed && chalActive < 0) {
@@ -1571,7 +1936,7 @@ static void menu_change(int item, int d) {
 static void menu_activate(int item) {
     audio_event(0);
     switch (item) {
-    case MI_FREE: chalActive = -1; start_flight(); break;
+    case MI_FREE: chalActive = -1; esc.phase = ES_OFF; route.on = false; apNav = 0; start_flight(); break;
     case MI_CHAL: state = ST_CHAL; break;
     case MI_HANGAR: state = ST_HANGAR; hangSel = 0; break;
     case MI_AIRPORT: searchFly = false; state = ST_SEARCH; search[0] = 0; nSearch = 0; searchSel = 0; SDL_StartTextInput(); break;
@@ -1760,12 +2125,12 @@ static void handle_event(SDL_Event *e) {
             if (pauseSel == 0) state = ST_FLY;
             else if (pauseSel == 1) { if (chalActive >= 0) start_challenge(chalActive); else start_flight(); }
             else if (pauseSel == 2) { state = ST_SEARCH; searchFly = true; chalActive = -1; restore_free(); search[0] = 0; nSearch = 0; searchSel = 0; SDL_StartTextInput(); }
-            else if (pauseSel == 3) { state = ST_MENU; chalActive = -1; restore_free(); camMode = CAM_ORBIT; spawn(); }
+            else if (pauseSel == 3) { esc.phase = ES_OFF; route.on = false; apNav = 0; state = ST_MENU; chalActive = -1; restore_free(); camMode = CAM_ORBIT; spawn(); }
             else running = false;
         }
         break;
     case ST_LOADING:
-        if (key == SDLK_ESCAPE) { state = ST_MENU; chalActive = -1; restore_free(); camMode = CAM_ORBIT; spawn(); }
+        if (key == SDLK_ESCAPE) { esc.phase = ES_OFF; route.on = false; apNav = 0; state = ST_MENU; chalActive = -1; restore_free(); camMode = CAM_ORBIT; spawn(); }
         else if (key == SDLK_RETURN || key == SDLK_SPACE) state = ST_FLY;
         break;
     case ST_FLY:
@@ -1782,7 +2147,7 @@ static void handle_event(SDL_Event *e) {
         else if (key == SDLK_x) { g_look.smokeOn = !g_look.smokeOn; audio_event(0); }
         else if (key == SDLK_c) { cycle(&camMode, NCAM, shift ? -1 : 1); flybyOk = false; towerTimer = 0; lookYaw = lookPitch = 0; }
         else if (key >= SDLK_F2 && key <= SDLK_F7) { camMode = key - SDLK_F2; flybyOk = false; towerTimer = 0; lookYaw = lookPitch = 0; }
-        else if (key == SDLK_KP_5) { camYaw = 0; camPitch = 0.16f; camZoom = 1; lookYaw = lookPitch = 0; }
+        else if (key == SDLK_KP_5) { camYaw = 0; camPitch = 0.2f; camZoom = 1; lookYaw = lookPitch = 0; }
         else if (key == SDLK_m) { showMap = !showMap; mapDX = mapDY = 0; }
         else if (key == SDLK_h) showHud = !showHud;
         else if (key == SDLK_F3) showFps = !showFps;
@@ -1792,9 +2157,24 @@ static void handle_event(SDL_Event *e) {
             /* 2x and 4x run the full physics; past that it is a cruise time warp for crossing oceans */
             float nr = shift ? (simRate <= 1 ? 1 : simRate / 2) : (simRate >= 64 ? 1 : simRate * 2);
             if (nr > 4 && (FL.onGround || FL.agl < 300)) { say("TIME WARP NEEDS 300 M ABOVE THE GROUND"); nr = 4; if (simRate >= 4 && !shift) nr = 1; }
+            if (nr > 1 && escorting()) {
+                int ti = traffic_find(esc.hex);
+                bool close = ti >= 0 && geo_dist(FL.lat, FL.lon, g_traffic[ti].lat, g_traffic[ti].lon) < 1500;
+                if (esc.phase != ES_ESCORT || !close) { say("IN AN ESCORT, TIME WARP WORKS ONCE YOU ARE IN FORMATION"); nr = 1; }
+                else if (nr > 1 && nr <= 4) nr = 8;      /* 2x / 4x would leave it behind: real planes fly in real time */
+            }
             simRate = nr;
             if (simRate > 4) say("TIME WARP: HOLDING HEADING, SPEED AND CLIMB. TAB / SHIFT+TAB TO CHANGE");
         }
+        else if (key == SDLK_i) escort_start();
+        else if (key == SDLK_o) fly_route();
+        else if (key == SDLK_y) {
+            if (esc.phase == ES_ESCORT) { if (apNav == 2 && ap) { ap = false; apNav = 0; say("FORMATION AUTOPILOT OFF"); } else { if (!ap) ap_toggle(); if (ap) { apNav = 2; say("AUTOPILOT HOLDING FORMATION"); } } }
+            else if (route.on) { if (apNav == 1 && ap) { ap = false; apNav = 0; say("AUTOPILOT NAV OFF"); } else { if (!ap) ap_toggle(); if (ap) { apNav = 1; say("AUTOPILOT NAV: FLYING THE ROUTE"); } } }
+            else if (escorting()) say("JOIN UP FIRST, THEN Y HOLDS FORMATION");
+            else say("NO ROUTE: PICK A FLIGHT IN THE TRACKER (K) AND PRESS O");
+        }
+        else if ((key == SDLK_RETURN || key == SDLK_KP_ENTER) && esc.phase >= ES_DONE) { esc.phase = ES_OFF; }
         else if (key == SDLK_k) { g_trackPanel = !g_trackPanel; if (!g_trackPanel && g_trackTyping) { g_trackTyping = false; SDL_StopTextInput(); } }
         else if (key == SDLK_n) { tracker_cycle(watching && tracker_index() >= 0 ? g_traffic[tracker_index()].lat : FL.lat, watching && tracker_index() >= 0 ? g_traffic[tracker_index()].lon : FL.lon, shift ? -1 : 1); if (!g_ntraffic) say("NO TRAFFIC NEARBY YET"); }
         else if (key == SDLK_DELETE || key == SDLK_BACKSPACE) { tracker_select(""); watching = false; }
@@ -1996,6 +2376,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--pos") && n) { argPos = sscanf(n, "%lf,%lf,%lf,%f", &posLat, &posLon, &posAlt, &posHdg); i++; }
         else if (!strcmp(a, "--track") && n) { snprintf(argTrack, sizeof argTrack, "%s", n); i++; }
         else if (!strcmp(a, "--watch")) argWatch = true;
+        else if (!strcmp(a, "--test-route") && n) { snprintf(argRoute, sizeof argRoute, "%s", n); i++; }
+        else if (!strcmp(a, "--test-escort") && n) { snprintf(argEscort, sizeof argEscort, "%s", n); i++; argEscortWarp = 32; }
+        else if (!strcmp(a, "--escort") && n) { snprintf(argEscort, sizeof argEscort, "%s", n); i++; argEscortWarp = 0; }
         else if (!strcmp(a, "--tracker")) g_trackPanel = true;
         else if (!strcmp(a, "--map")) { showMap = true; if (n && n[0] != '-') { mapZoom = atoi(n); i++; } }
         else if (!strcmp(a, "--frames") && n) { maxFrames = atoi(n); i++; }
@@ -2051,6 +2434,7 @@ int main(int argc, char **argv) {
     if (testFlight) { if (testLanding) { run_landing_test(false); run_landing_test(true); } else run_flight_test(); return 0; }
     tiles_init();
     airframe_init(dataDir);
+    borders_load(dataDir);
     traffic_init(); traffic_enable(S.traffic); tracker_init();
     int dw, dh; SDL_GL_GetDrawableSize(win, &dw, &dh);
     rc.w = dw; rc.h = dh;
@@ -2071,7 +2455,7 @@ int main(int argc, char **argv) {
     else if (fly) { chalActive = -1; start_flight(); }
     if (argCam >= 0) camMode = argCam; else if (state == ST_LOADING) camMode = CAM_CHASE;
     if (argPos >= 2) { if (!fly) { chalActive = -1; start_flight(); } teleport(posLat, posLon, argPos >= 3 ? posAlt : 3000, argPos >= 4 ? posHdg : 0); utcHours = tod - posLon / 15.0; if (camMode == CAM_ORBIT) camMode = CAM_CHASE; }
-    if (shot && state == ST_LOADING) { state = ST_FLY; paused = true; freezeShot = true; }
+    if (shot && state == ST_LOADING) { state = ST_FLY; paused = !(argEscort[0] && argEscortWarp > 0) && !argRoute[0]; freezeShot = paused; }
     if (argThrottle >= 0) { FL.throttle = argThrottle; athr = false; FL.ab = FL.def->afterburner > 0 && argThrottle > 0.9f ? (argThrottle - 0.9f) / 0.1f : 0; }
 
     Uint64 last = SDL_GetPerformanceCounter();
@@ -2084,6 +2468,10 @@ int main(int argc, char **argv) {
         last = now;
         if (shot) dt = 1.0f / 30;
         dt = clampf(dt, 0.0001f, 0.05f);
+        {   /* frame pacing: even out the small frame-to-frame wobble of the clock, keep real hitches */
+            static float dtS = 1.0f / 60;
+            if (fabsf(dt - dtS) < dtS * 0.5f) { dtS += (dt - dtS) * 0.1f; dt = dtS; } else dtS = dtS * 0.7f + dt * 0.3f;
+        }
         fps = fps * 0.95f + 0.05f / dt;
         realTime += dt;
         msgTimer -= dt; tdTimer -= dt; reviewTimer -= dt;
@@ -2103,12 +2491,18 @@ int main(int argc, char **argv) {
             if (simRate > 4 && (FL.onGround || FL.agl < 300 || FL.crashed || FL.stall)) { simRate = 1; say("TIME WARP OFF"); }
             float sdt = dt * simRate, pdt = dt * fminf(simRate, 4);
             FL.wind = wind_at(&FL, simTime);
-            flight_step(&FL, pdt);
-            if (sdt > pdt) flight_cruise(&FL, sdt - pdt);
+            nav_update(dt);
+            if (esc.phase == ES_ESCORT && simRate > 1) escort_warp(dt);
+            else {
+                esc.warping = false;
+                flight_step(&FL, pdt);
+                if (sdt > pdt) flight_cruise(&FL, sdt - pdt);
+            }
             simTime += sdt;
             if (FL.touchdowns > lastTouchdowns) { lastTouchdowns = FL.touchdowns; on_touchdown(); }
             if (ap && (FL.onGround || FL.crashed)) { ap = false; audio_event(3); }
             if ((frame & 15) == 0) find_approach();
+            escort_update(dt);
             passengers(sdt);
             evaluate_landing();
         } else if (!flying && state != ST_LOADING) {
@@ -2119,12 +2513,52 @@ int main(int argc, char **argv) {
         {
             int wi = watching ? tracker_index() : -1;
             traffic_update(wi >= 0 ? g_traffic[wi].lat : FL.lat, wi >= 0 ? g_traffic[wi].lon : FL.lon, dt);
+            if (argRoute[0] && state == ST_FLY) {
+                /* test: pick the flight, start at its origin, climb out on the autopilot, NAV, time warp */
+                if (argRouteStage == 0 && traffic_find(argRoute) >= 0) { tracker_select(argRoute); argRouteStage = 1; }
+                else if (argRouteStage == 1 && g_track.state == 2) { fly_route(); argRouteStage = 2; fprintf(stderr, "route test: %s from %s\n", route.name, aptSel >= 0 ? g_airports[aptSel].ident : "?"); }
+                else if (argRouteStage == 2 && route.on) {
+                    double la, lo, tot = geo_dist(FL.lat, FL.lon, route.lat, route.lon);
+                    geo_offset(FL.lat, FL.lon, geo_bearing(FL.lat, FL.lon, route.lat, route.lon), fmax(tot - 45 * 1852.0, 0), &la, &lo);
+                    teleport(la, lo, 5500, (float)geo_bearing(la, lo, route.lat, route.lon));
+                    ap = true; apNav = 1; apAlt = (float)FL.alt; apHdg = FL.heading; apSpd = FL.ias; simRate = 64; argRouteStage = 3;
+                }
+                else if (argRouteStage == 3) {
+                    static int k; if (++k % 90 == 0) fprintf(stderr, "  %.0f NM to go  hdg %.0f / course %.0f  alt %.0f ft (target %.0f)  ias %.0f kt  ap %d nav %d rate %.0f\n", geo_dist(FL.lat, FL.lon, route.lat, route.lon) / 1852, FL.heading, geo_bearing(FL.lat, FL.lon, route.lat, route.lon), FL.alt / FT, apAlt / FT, FL.ias / KT, ap, apNav, simRate);
+                    if (!ap || FL.crashed) { fprintf(stderr, "route test: autopilot handed back at %.1f NM from %s%s\n", geo_dist(FL.lat, FL.lon, route.lat, route.lon) / 1852, route.to, FL.crashed ? " (CRASHED)" : ""); argRoute[0] = 0; }
+                }
+            }
+            if (argEscort[0] && state == ST_FLY && esc.phase == ES_OFF && traffic_find(argEscort) >= 0) {
+                tracker_select(argEscort); escort_start();
+                if (esc.phase == ES_OFF) { fprintf(stderr, "escort test: could not start (%s)\n", msg); argEscort[0] = 0; }
+                else fprintf(stderr, "escort test: scramble from %s, target in %s\n", aptSel >= 0 ? g_airports[aptSel].ident : "?", borders_name(esc.country));
+            }
+            if (argEscort[0] && argEscortWarp == 0 && esc.phase != ES_OFF) argEscort[0] = 0;   /* --escort: just start it */
+            if (argEscort[0] && state == ST_FLY && esc.phase == ES_SCRAMBLE) {
+                /* test: skip the chase, join up, autopilot formation and time warp */
+                int ti = traffic_find(argEscort);
+                if (ti >= 0) {
+                    double la, lo, al; formation_slot(&g_traffic[ti], &la, &lo, &al);
+                    flight_reset(&FL, FL.def, la, lo, (float)al, g_traffic[ti].prevTrack, fmaxf(g_traffic[ti].gs, 120), false);
+                    if (FL.def->retract) FL.gearDown = FL.gearCmd = 0;
+                    flight_trim(&FL, 0); flight_step(&FL, 1e-4f);
+                    esc.phase = ES_ESCORT; ap = true; apNav = 2; apAlt = (float)al; apHdg = g_traffic[ti].prevTrack; apSpd = FL.ias; simRate = argEscortWarp;
+                    fprintf(stderr, "escort test: joined up, warp x%.0f\n", simRate);
+                }
+            }
+            if (argEscort[0] && esc.phase >= ES_DONE) { fprintf(stderr, "escort test: %s: %s  stars %d  formation %.0f%%  escort %.0f s (sim)\n", esc.phase == ES_DONE ? "COMPLETE" : "FAILED", esc.why, esc.stars, esc.tEscort > 0 ? esc.tForm / esc.tEscort * 100 : 0, esc.tEscort); argEscort[0] = 0; }
             if (argTrack[0] && traffic_find(argTrack) >= 0) { tracker_select(argTrack); argTrack[0] = 0; if (argWatch) { watching = true; camYaw = 0.6f; camPitch = 0.15f; } }
             tracker_frame();
         }
         double hours = utcHours + simTime / 3600.0 + FL.lon / 15.0;
         render_set_time(FL.lat, FL.lon, (float)fmod(hours + 48, 24), doy);
         update_camera(dt);
+        {   /* prefetch the ground half a minute ahead when moving fast (or in time warp) */
+            float sp = vlen(FL.vel);
+            bool on = state == ST_FLY && sp > 40 && !watching;
+            float look = clampf(25.0f * (simRate > 1 ? fminf(simRate, 8) : 1), 10, 200);
+            terrain_lookahead(dadd(FL.pos, f2d(vmul(FL.vel, look))), on);
+        }
         /* audio */
         g_audio.rpm = FL.rpm; g_audio.throttle = FL.throttle; g_audio.airspeed = vlen(vsub(FL.vel, FL.wind));
         g_audio.stall = FL.stall && state == ST_FLY; g_audio.onGround = FL.onGround; g_audio.groundSpeed = FL.gs;
@@ -2136,7 +2570,10 @@ int main(int argc, char **argv) {
         hud_begin();
         if (state == ST_FLY || state == ST_PAUSE) {
             if (showHud && !showMap) draw_traffic_labels();
+            if (showHud && !watching) draw_route_line();
             if (showHud && !watching) draw_flight_hud();
+            if (!showMap && !watching) { draw_escort_hud(); draw_route_hud(); }
+            draw_escort_result();
             if (!showMap && (g_trackPanel || g_track.hex[0])) tracker_draw(&cam, W, H, s_, FL.lat, FL.lon, watching);
             if (watching) draw_watch_banner();
             if (showMap) draw_map();
@@ -2157,7 +2594,7 @@ int main(int argc, char **argv) {
         if (shot) {
             int q, b, ok, fail; tiles_stats(&q, &b, &ok, &fail);
             quietFrames = (q + b == 0) ? quietFrames + 1 : 0;
-            bool trafficIn = (!S.traffic || S.offline || (g_ntraffic > 0 && (!S.traffic_global || traffic_world(NULL, NULL) > 0)) || frame > 400) && (!g_track.hex[0] || g_track.state != 1 || frame > 500) && (!argTrack[0] || frame > 500);
+            bool trafficIn = (!S.traffic || S.offline || (g_ntraffic > 0 && (!S.traffic_global || traffic_world(NULL, NULL) > 0)) || frame > 400) && (!g_track.hex[0] || g_track.state != 1 || frame > 500) && (!argTrack[0] || frame > 500) && !argEscort[0] && !argRoute[0] && state == ST_FLY;
             if ((frame > 120 && quietFrames > 45 && trafficIn) || frame >= maxFrames) {
                 render_screenshot(shot);
                 if (getenv("WINGMERE_DEBUG")) { double la, lo, h; ecef_to_geo(cam.pos, &la, &lo, &h); fprintf(stderr, "debug: plane alt %.1f agl %.1f  cam alt %.1f ground %.1f  fov %.2f  fwd %.2f %.2f %.2f\n", FL.alt, FL.agl, h, terrain_height(la, lo, NULL, NULL), cam.fov, cam.fwd.x, cam.fwd.y, cam.fwd.z); }

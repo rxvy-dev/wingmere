@@ -150,6 +150,7 @@ FAKE_TRAFFIC = [
     ('a1b2c6', 'SKW5521 ', 'N601SK', 'CRJ9', *_at(800, 80), 'ground', 0, 28, 0),
     ('a1b2cf', 'KLM605  ', 'PH-BHA', 'B789', *_at(940, 150), 'ground', 0, 28, 0),
     ('a1b2c7', 'N172SP  ', 'N172SP', 'C172', *_at(90, -70), 'ground', 0, 298, 0),
+    ('a1b2d0', 'UAL837  ', 'N26966', 'B789', -2000, 1500, 14000, 300, 285, 1500),
     ('a1b2c8', 'VIPER11 ', '', 'F16', -4000, -2500, 9000, 420, 45, 0),
     ('a1b2ca', 'LIFE1   ', 'N911LF', 'EC35', 500, 3500, 900, 110, 150, 0),
     ('a1b2cb', 'DAL88   ', 'N801DN', 'B77W', -6000, 6000, 11000, 300, 135, 1800),
@@ -177,6 +178,7 @@ def fake_traffic(lat, lon):
 
 # what adsbdb would say about each fake aircraft
 FAKE_ROUTES = {
+    'a1b2d0': ('United Airlines', ('KSFO', 'SFO', 'San Francisco International Airport', 'San Francisco', 37.619, -122.375), ('RJAA', 'NRT', 'Narita International Airport', 'Tokyo', 35.765, 140.386), 'Boeing', '787-9', 'B789', 'N26966', 'United Airlines'),
     'a1b2c3': ('United Airlines', ('KSFO', 'SFO', 'San Francisco International Airport', 'San Francisco', 37.619, -122.375), ('KJFK', 'JFK', 'John F Kennedy International Airport', 'New York', 40.640, -73.779), 'Boeing', '737-824', 'B738', 'N12345', 'United Airlines'),
     'a1b2c4': ('British Airways', ('EGLL', 'LHR', 'London Heathrow Airport', 'London', 51.470, -0.454), ('KSFO', 'SFO', 'San Francisco International Airport', 'San Francisco', 37.619, -122.375), 'Airbus', 'A380-841', 'A388', 'G-XLEA', 'British Airways'),
     'a1b2c5': ('Alaska Airlines', ('KSEA', 'SEA', 'Seattle Tacoma International Airport', 'Seattle', 47.449, -122.309), ('KSFO', 'SFO', 'San Francisco International Airport', 'San Francisco', 37.619, -122.375), 'Airbus', 'A320-214', 'A320', 'N623VA', 'Alaska Airlines'),

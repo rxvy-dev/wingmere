@@ -12,7 +12,7 @@
 #include <string.h>
 #include <strings.h>
 
-#define WM_VERSION "0.4.0"
+#define WM_VERSION "0.5.0"
 #define PI 3.14159265358979f
 #define DEG (PI / 180.0f)
 #define KT 0.514444f     /* metres/second per knot */
@@ -129,6 +129,7 @@ float runway_flatten_list(const int *list, int n, double lat, double lon, float 
 /* ------------------------------------------------------------------ terrain (terrain.c) */
 void  terrain_init(void);
 void  terrain_update(d3 cam, const float frustum[6][4], float tanHalfFov, int screenH);
+void  terrain_lookahead(d3 p, bool on);
 void  terrain_draw(GLuint prog, d3 cam);
 float terrain_height(double lat, double lon, bool *water, bool *runway);
 void  terrain_stats(int *drawn, int *meshes, int *textures, int *elev);
@@ -242,8 +243,11 @@ typedef struct {
     char country[24]; int cat;                           /* registration country, emitter category (global feed) */
     float detAge;                                        /* seconds since the detailed nearby feed last saw it */
     bool guessed;                                        /* type not reported: airframe picked from its category */
+    float ahead;                                         /* shown this many seconds in the future (escort time warp): predicted */
+    double destLat, destLon; bool hasDest;               /* where it is going, when its route is known */
     double lat, lon, alt;                       /* drawn position (metres above sea level) */
-    double fixLat, fixLon, fixAlt; float fixT;  /* last report and the time since it */
+    double fixLat, fixLon, fixAlt; float fixT;  /* last report and the time since it (counting the report's own age) */
+    double cLat, cLon, cAlt; float cT;          /* where it was drawn minus where the new report puts it: faded out, never lagging */
     float gs, track, vrate, age, bank, turn, prevTrack;  /* m/s, degrees true, m/s */
     bool ground, fresh;
     const char *model; float scale;             /* which of our aircraft stands in for it */
@@ -258,6 +262,14 @@ bool traffic_status(int *count);
 int traffic_world(float *age, bool *ok);   /* aircraft known worldwide, seconds since the global snapshot */
 void traffic_track(const char *hex);    /* also poll this aircraft by itself, wherever it goes ("" to stop) */
 int traffic_find(const char *hex);
+
+/* ------------------------------------------------------------------ country borders (borders.c) */
+void borders_load(const char *datadir);
+int borders_land(double lat, double lon);
+int borders_airspace(double lat, double lon);
+double borders_distance(int c, double lat, double lon);
+const char *borders_name(int c);
+int borders_rings(int c, int k, const float **p);
 
 /* ------------------------------------------------------------------ airframes for live traffic (airframe.c) */
 void airframe_init(const char *datadir);

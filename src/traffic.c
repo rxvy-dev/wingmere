@@ -26,7 +26,7 @@ static size_t tdata(void *ptr, size_t sz, size_t nm, void *ud) {
 
 /* ------------------------------------------------------------------ a tiny JSON walker for the "ac" array */
 typedef struct { char hex[8], flight[10], reg[12], type[6], desc[48], ownOp[48], year[6], squawk[6], emergency[16], category[4], country[24];
-    double lat, lon; float alt, gs, track, vrate, navAlt, navHdg, mach, ias, altGeom; bool ground, hasPos, mil; int cat; } Fix;
+    double lat, lon; float alt, gs, track, vrate, navAlt, navHdg, mach, ias, altGeom, seen; bool ground, hasPos, mil; int cat; } Fix;
 static const char *ws(const char *s) { while (*s == ' ' || *s == '\n' || *s == '\r' || *s == '\t') s++; return s; }
 static const char *skip_value(const char *s) {
     s = ws(s);
@@ -95,6 +95,7 @@ static int parse(const char *js, Fix *out, int max) {
             else if (!strcmp(key, "mach")) { f.mach = (float)strtod(s, NULL); s = skip_value(s); }
             else if (!strcmp(key, "ias")) { f.ias = (float)strtod(s, NULL); s = skip_value(s); }
             else if (!strcmp(key, "alt_geom")) { f.altGeom = (float)strtod(s, NULL); s = skip_value(s); }
+            else if (!strcmp(key, "seen_pos") || (!strcmp(key, "seen") && f.seen == 0)) { f.seen = (float)strtod(s, NULL); s = skip_value(s); }
             else if (!strcmp(key, "dbFlags")) { f.mil = ((int)strtol(s, NULL, 10) & 1) != 0; s = skip_value(s); }
             else s = skip_value(s);
         }
@@ -166,7 +167,42 @@ static void *worker(void *arg) {
             pthread_mutex_unlock(&tmu);
             free(b.p);
         }
-        for (int i = 0; i < (go ? 80 : 2) && !tQuit; i++) SDL_Delay(100);   /* every 8 seconds: be polite to a free service */
+        for (int i = 0; i < (go ? 60 : 2) && !tQuit; i++) SDL_Delay(100);   /* every 6 seconds: be polite to a free service */
+    }
+    curl_easy_cleanup(c);
+    return NULL;
+}
+
+/* the tracked (or escorted) aircraft, by itself, every two seconds */
+static Fix hbox[4]; static int nHbox; static bool hboxNew;
+static void *hworker(void *arg) {
+    (void)arg;
+    CURL *c = curl_easy_init();
+    if (!c) return NULL;
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, tdata);
+    curl_easy_setopt(c, CURLOPT_USERAGENT, S.user_agent);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 6L);
+    curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, "");
+    while (!tQuit) {
+        pthread_mutex_lock(&tmu); char th[8]; memcpy(th, trackHex, sizeof th); bool go = tOn && th[0] && S.traffic_hex_url[0]; pthread_mutex_unlock(&tmu);
+        if (go) {
+            char u2[600], *o = u2;
+            for (const char *q = S.traffic_hex_url; *q && o < u2 + sizeof u2 - 12; q++) {
+                if (!strncmp(q, "{hex}", 5)) { o += sprintf(o, "%s", th); q += 4; } else *o++ = *q;
+            }
+            *o = 0;
+            TB b = {0};
+            curl_easy_setopt(c, CURLOPT_URL, u2);
+            curl_easy_setopt(c, CURLOPT_WRITEDATA, &b);
+            long code = 0;
+            if (curl_easy_perform(c) == CURLE_OK && (curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code), code == 200) && b.p) {
+                Fix tmp[4]; int n = parse(b.p, tmp, 4);
+                if (n > 0) { pthread_mutex_lock(&tmu); memcpy(hbox, tmp, sizeof(Fix) * n); nHbox = n; hboxNew = true; pthread_mutex_unlock(&tmu); }
+            }
+            free(b.p);
+        }
+        for (int i = 0; i < 20 && !tQuit; i++) SDL_Delay(100);
     }
     curl_easy_cleanup(c);
     return NULL;
@@ -179,6 +215,8 @@ static void *worker(void *arg) {
 static Fix gbox[MAX_TRAFFIC]; static int nGbox; static bool gboxNew;
 static float gAge = 1e9f; static bool gOk; static int gCount;
 static int parse_states(const char *js, Fix *out, int max) {
+    const char *tt = strstr(js, "\"time\"");
+    double now = tt ? strtod(strchr(tt, ':') + 1, NULL) : 0;
     const char *s = strstr(js, "\"states\"");
     if (!s) return -1;
     s = strchr(s, ':'); if (!s) return -1;
@@ -202,6 +240,7 @@ static int parse_states(const char *js, Fix *out, int max) {
             case 0: s = read_str(s, f.hex, sizeof f.hex); break;
             case 1: s = read_str(s, f.flight, sizeof f.flight); break;
             case 2: s = read_str(s, f.country, sizeof f.country); break;
+            case 3: if (!null && now > 0) f.seen = (float)fmax(now - strtod(s, NULL), 0); s = skip_value(s); break;
             case 5: if (!null) { f.lon = strtod(s, NULL); hasLon = true; } s = skip_value(s); break;
             case 6: if (!null) { f.lat = strtod(s, NULL); hasLat = true; } s = skip_value(s); break;
             case 7: if (!null) f.alt = (float)(strtod(s, NULL) / FT); s = skip_value(s); break;
@@ -292,6 +331,7 @@ void traffic_init(void) {
     started = true;
     pthread_t t; pthread_create(&t, NULL, worker, NULL); pthread_detach(t);
     pthread_t g; pthread_create(&g, NULL, gworker, NULL); pthread_detach(g);
+    pthread_t hw; pthread_create(&hw, NULL, hworker, NULL); pthread_detach(hw);
 }
 void traffic_track(const char *hex) { pthread_mutex_lock(&tmu); snprintf(trackHex, sizeof trackHex, "%s", hex ? hex : ""); pthread_mutex_unlock(&tmu); }
 /* hex -> index, so a 15,000-aircraft snapshot merges in a blink */
@@ -394,6 +434,15 @@ static void merge(const Fix *f, bool detailed) {
         }
     }
     t->gs = f->gs * KT; t->track = f->track; t->vrate = f->vrate * FT / 60; t->ground = f->ground; t->age = 0; t->fresh = true;
+    t->fixT = clampf(f->seen, 0, 30);           /* the report was already this old when it arrived */
+    /* keep drawing it where it was; the difference to the new report fades out over a couple of seconds */
+    if (!isNew && t->alt > -1e8) {
+        double pla, plo; geo_offset(t->fixLat, t->fixLon, t->track, t->gs * t->fixT, &pla, &plo);
+        t->cLat = t->lat - pla; t->cLon = remainder(t->lon - plo, 360.0);
+        t->cAlt = t->ground ? 0 : t->alt - (t->fixAlt + t->vrate * t->fixT);
+        if (fabs(t->cLat) > 0.05 || fabs(t->cLon) > 0.05 || fabs(t->cAlt) > 600) t->cLat = t->cLon = t->cAlt = 0;
+    } else t->cLat = t->cLon = t->cAlt = 0;
+    t->cT = 0;
     pick_model(t);
 }
 
@@ -407,6 +456,7 @@ void traffic_update(double lat, double lon, float dt) {
     bool changed = false;
     if (gboxNew) { gboxNew = false; gAge = 0; for (int i = 0; i < nGbox; i++) merge(&gbox[i], false); changed = true; }
     if (inboxNew) { inboxNew = false; for (int i = 0; i < nInbox; i++) merge(&inbox[i], true); }
+    if (hboxNew) { hboxNew = false; for (int i = 0; i < nHbox; i++) merge(&hbox[i], true); }
     pthread_mutex_unlock(&tmu);
     float worldLife = fmaxf(S.global_interval * 3, 420);
     float coslat = cosf((float)(lat * M_PI / 180));
@@ -416,23 +466,30 @@ void traffic_update(double lat, double lon, float dt) {
         bool tracked = trackHex[0] && !strcasecmp(t->hex, trackHex);
         float life = tracked ? 900 : (t->detAge < 1e8f && t->age < 70 ? 60 : worldLife);
         if (t->age > life) { g_traffic[i] = g_traffic[--g_ntraffic]; changed = true; continue; }
-        if (t->fresh) { t->fixT = 0; t->fresh = false; }
-        t->fixT += dt;
+        t->fresh = false;
+        t->fixT += dt; t->cT += dt;
         /* aircraft near you are flown smoothly every frame; the rest of the world a slice at a time */
         bool near = fabs(t->lat - lat) < 2 && fabs(remainder(t->lon - lon, 360.0)) * coslat < 2;
         if (!near && !tracked && ((unsigned)i % 24) != frame % 24) { i++; continue; }
-        float tt = fminf(t->fixT, 12), trk = t->track + t->turn * tt * 0.5f;
-        double d = t->gs * fminf(t->fixT, 1800), pla, plo;
+        float T = t->fixT + t->ahead;
+        float tt = fminf(T, 12), trk = t->track + t->turn * tt * 0.5f;
+        double d = t->gs * fminf(T, t->ahead > 0 ? 1e6f : 1800), pla, plo;
+        if (t->ahead > 0 && t->hasDest) {
+            /* predicted ahead of the live data: along the great circle to where it is going */
+            double left = geo_dist(t->fixLat, t->fixLon, t->destLat, t->destLon);
+            trk = (float)geo_bearing(t->fixLat, t->fixLon, t->destLat, t->destLon);
+            d = fmin(d, fmax(left - 3000, 0));
+        } else if (t->ahead > 0) trk = t->track;
         geo_offset(t->fixLat, t->fixLon, trk, d, &pla, &plo);
         float bankT = t->ground ? 0 : clampf(atanf(t->gs * t->turn * DEG / 9.81f) / DEG, -35, 35);
         t->bank += (bankT - t->bank) * (1 - expf(-dt * 1.5f));
         t->prevTrack = t->track + t->turn * tt;
         double palt;
         if (near) {
-            palt = t->ground ? terrain_height(pla, plo, NULL, NULL) : t->fixAlt + t->vrate * fminf(t->fixT, 120);
-            float k = 1 - expf(-dt * 0.8f);
-            if (fabs(t->lat - pla) > 0.5 || fabs(t->lon - plo) > 0.5 || t->alt < -1e8) { t->lat = pla; t->lon = plo; t->alt = palt; }
-            t->lat += (pla - t->lat) * k; t->lon += (plo - t->lon) * k; t->alt += (palt - t->alt) * k;
+            /* dead reckoning on the report, plus the leftover correction fading out: no lag behind the real thing */
+            palt = t->ground ? terrain_height(pla, plo, NULL, NULL) : t->fixAlt + t->vrate * fminf(t->fixT, t->ahead > 0 ? 20 : 120);
+            float fade = expf(-t->cT / 2.5f);
+            t->lat = pla + t->cLat * fade; t->lon = plo + t->cLon * fade; t->alt = palt + t->cAlt * fade;
             if (t->ground) t->alt = fmax(t->alt, terrain_height(t->lat, t->lon, NULL, NULL));
         } else {
             palt = t->ground ? t->fixAlt : t->fixAlt + t->vrate * fminf(t->fixT, 120);

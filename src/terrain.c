@@ -10,7 +10,7 @@
 #define G 33                     /* vertices per tile edge */
 #define NV (G * G + 4 * G)       /* grid + skirt */
 #define CAP_ELEV 768
-#define CAP_IMG 2048
+#define CAP_IMG 4096
 #define CAP_MESH 2048
 #define MAX_DRAW 3000
 
@@ -371,7 +371,7 @@ static MeshTile *mesh_for(int z, int x, int y, bool allowBuild) {
     if (m) {
         m->last = frameNo;
         int vzz; VecC *vv = vec_best(z, x, y, &vzz); int mz = vv && vzz >= 7 ? vzz : -1; (void)vv;
-        if ((m->srcZ != best || m->maskZ != mz) && allowBuild && builds < 40) { builds++; build_mesh(m, z, x, y); }
+        if ((m->srcZ != best || m->maskZ != mz) && allowBuild && builds < 60) { builds++; build_mesh(m, z, x, y); }
         return m;
     }
     if (!allowBuild || builds >= 40) return NULL;
@@ -390,7 +390,7 @@ static MeshTile *mesh_for(int z, int x, int y, bool allowBuild) {
 static void receive(void) {
     TileData t[32];
     int n;
-    while (uploads < 24 && (n = tiles_poll(t, 32 < 24 - uploads ? 32 : 24 - uploads)) > 0) {
+    while (uploads < 40 && (n = tiles_poll(t, 32 < 40 - uploads ? 32 : 40 - uploads)) > 0) {
         for (int i = 0; i < n; i++) {
             TileData *d = &t[i];
             if (d->layer == LAYER_ELEV) {
@@ -524,6 +524,22 @@ static void visit(int z, int x, int y) {
     if (nDraw < MAX_DRAW) { draw[nDraw].z = z; draw[nDraw].x = x; draw[nDraw].y = y; draw[nDraw].dist = (float)dist; nDraw++; }
     want(z, x, y, (float)dist, (float)size);
 }
+/* prefetch: ask for the ground where you will be in half a minute, so it is sharp when you get there */
+static d3 aheadPos; static bool aheadOn;
+void terrain_lookahead(d3 p, bool on) { aheadPos = p; aheadOn = on; }
+static void prefetch(int z, int x, int y) {
+    double latc = merc_lat(y + 0.5, z), lonc = merc_lon(x + 0.5, z);
+    double size = 2 * M_PI * EARTH_R * cos(latc * M_PI / 180) / (1 << z);
+    d3 c = geo_to_ecef(latc, lonc, 0);
+    double dist = dlen(dsub(c, aheadPos)) - size * 0.75;
+    if (dist < 0) dist = 0;
+    if (dist > size * 6 && z > 4) return;
+    if (z < maxZ - 1 && dist < size * splitK * 0.55) {
+        for (int k = 0; k < 4; k++) prefetch(z + 1, x * 2 + (k & 1), y * 2 + (k >> 1));
+        return;
+    }
+    want(z, x, y, (float)dist + 3000, (float)size);     /* behind what is on screen now */
+}
 static int by_dist(const void *a, const void *b) { float d = ((const Node *)a)->dist - ((const Node *)b)->dist; return d < 0 ? -1 : d > 0; }
 
 void terrain_init(void) {
@@ -555,6 +571,7 @@ void terrain_update(d3 cam, const float fr[6][4], float tanHalfFov, int screenH)
     nDraw = 0;
     for (int y = 0; y < 4; y++)
         for (int x = 0; x < 4; x++) visit(2, x, y);
+    if (aheadOn) for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) prefetch(2, x, y);
     qsort(draw, nDraw, sizeof(Node), by_dist);
     for (int i = 0; i < CAP_IMG; i++) if (img[i].status == 0 && img[i].key && img[i].last < frameNo - 120) img_free(&img[i]);
     for (int i = 0; i < CAP_ELEV; i++) if (elev[i].status == 0 && elev[i].key && elev[i].last < frameNo - 120) elev_free(&elev[i]);
